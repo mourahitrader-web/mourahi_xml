@@ -138,6 +138,15 @@
                 </div>
             </div>
             <div id="navQueriesPanel" role="tabpanel" aria-labelledby="queriesTab" class="hidden flex-1 min-h-0 flex flex-col">
+                <div class="flex items-center justify-between border-b border-[#c8c6c4] bg-[#f3f2f1] px-2 py-1">
+                    <span class="font-semibold text-gray-700">Requêtes partagées</span>
+                    <button type="button" onclick="loadSheetQueries()" class="px-2 py-1 text-blue-700 hover:bg-white rounded" title="Actualiser depuis Google Sheets">
+                        <i class="fa-solid fa-rotate mr-1"></i>Actualiser
+                    </button>
+                </div>
+                <div id="sheetQueryStatus" class="px-2 py-1 text-gray-500 text-[11px]" aria-live="polite">La liste sera chargée depuis Google Sheets à l’ouverture de cet onglet.</div>
+                <div id="sheetQueryList" class="min-h-0 overflow-y-auto p-1 space-y-0.5 bg-white" style="max-height: 45%;"></div>
+                <div class="border-y border-[#c8c6c4] bg-[#f3f2f1] px-2 py-1 font-semibold text-gray-700">Mes requêtes</div>
                 <div id="savedQueryList" class="flex-1 min-h-0 overflow-y-auto p-1 space-y-0.5 bg-white">
                     <div class="text-gray-400 text-center py-3 italic">Aucune requête enregistrée.</div>
                 </div>
@@ -167,6 +176,9 @@
             <div id="queryGridPanel" class="h-56 border-t-2 border-[#c8c6c4] bg-[#f3f2f1] flex flex-col select-none">
                 <div class="bg-[#e1dfdd] px-3 py-1 font-bold text-gray-700 border-b border-[#c8c6c4] flex items-center justify-between">
                     <span><i class="fa-solid fa-table-cells text-red-700 mr-1.5"></i> Grille de Création de Requête & Filtres (Access Style)</span>
+                    <button id="addQueryColumnButton" type="button" onclick="addQueryColumn()" class="rounded px-2 py-0.5 text-xs font-semibold text-blue-700 hover:bg-white" title="Ajouter une colonne à la grille de requête">
+                        <i class="fa-solid fa-plus mr-1"></i>Ajouter une colonne
+                    </button>
                 </div>
                 <div class="flex-1 overflow-auto bg-white p-2">
                     <table class="border-collapse">
@@ -355,7 +367,7 @@
     <div id="queryNameModal" class="fixed inset-0 bg-black/40 z-50 hidden flex items-center justify-center">
         <form class="bg-white rounded shadow-2xl w-96 border border-gray-400 overflow-hidden" onsubmit="saveQueryFromDialog(event)">
             <div class="bg-[#b91c1c] text-white px-3 py-2 flex items-center justify-between font-bold">
-                <span>Enregistrer la requête</span>
+                <span id="queryNameModalTitle">Enregistrer la requête</span>
                 <button type="button" onclick="closeQueryNameModal()" aria-label="Fermer"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <div class="p-4">
@@ -364,9 +376,20 @@
             </div>
             <div class="bg-gray-100 px-4 py-2 flex justify-end gap-2 border-t border-gray-300">
                 <button type="button" onclick="closeQueryNameModal()" class="bg-gray-300 hover:bg-gray-400 text-gray-800 px-3 py-1 rounded text-xs">Annuler</button>
-                <button type="submit" class="bg-red-700 hover:bg-red-800 text-white px-3 py-1 rounded text-xs font-semibold">Enregistrer</button>
+                <button id="queryNameSubmitButton" type="submit" class="bg-red-700 hover:bg-red-800 text-white px-3 py-1 rounded text-xs font-semibold">Enregistrer</button>
             </div>
         </form>
+    </div>
+    <div id="savedQueryContextMenu" class="fixed z-[80] hidden min-w-36 overflow-hidden rounded border border-gray-300 bg-white py-1 shadow-xl" role="menu" aria-label="Actions sur la requête">
+        <button type="button" data-query-action="duplicate" onclick="handleSavedQueryContextAction('duplicate')" role="menuitem" class="block w-full px-3 py-1.5 text-left text-gray-800 hover:bg-gray-100">
+            <i class="fa-regular fa-copy mr-2 text-gray-500"></i>Dupliquer
+        </button>
+        <button type="button" data-query-action="rename" onclick="handleSavedQueryContextAction('rename')" role="menuitem" class="block w-full px-3 py-1.5 text-left text-gray-800 hover:bg-gray-100">
+            <i class="fa-solid fa-pen mr-2 text-gray-500"></i>Renommer
+        </button>
+        <button type="button" data-query-action="delete" onclick="handleSavedQueryContextAction('delete')" role="menuitem" class="block w-full px-3 py-1.5 text-left text-red-700 hover:bg-red-50">
+            <i class="fa-solid fa-trash-can mr-2"></i>Supprimer
+        </button>
     </div>
 
     <!-- Script Application Logic -->
@@ -385,8 +408,17 @@
         };
         const QUERY_STORAGE_KEY = 'xml2data.savedQueries';
         const QUERY_DRAFT_KEY = 'xml2data.queryDraft';
+        const QUERY_SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/1lTZqnON6cHFABqoQuNamg7l2ecwqi7A6QsHO1VnErWw/export?format=csv';
         let savedQueries = [];
+        let sheetQueries = [];
+        let sheetQueriesLoaded = false;
+        let sheetQueriesLoading = false;
+        let activeSheetQuery = null;
         let activeQueryId = null;
+        let contextMenuQueryId = null;
+        let contextMenuQuerySource = 'saved';
+        let pendingRenameQueryId = null;
+        let pendingSaveAsNewFromSheetName = null;
         let activeSqlText = null;
         let savedQueryDefinition = '';
         let skipUnloadWarning = false;
@@ -464,6 +496,12 @@
             if (selectAllCheckbox) {
                 selectAllCheckbox.addEventListener('change', toggleSelectAllTables);
             }
+            document.addEventListener('click', event => {
+                if (!event.target.closest('#savedQueryContextMenu')) closeSavedQueryContextMenu();
+            });
+            document.addEventListener('keydown', event => {
+                if (event.key === 'Escape') closeSavedQueryContextMenu();
+            });
             document.addEventListener('input', updateSaveButtonState);
             document.addEventListener('change', updateSaveButtonState);
             document.addEventListener('click', updateSaveButtonState);
@@ -515,7 +553,7 @@
         function updateSqlButtonState() {
             const button = document.getElementById('showSqlButton');
             if (!button) return;
-            const hasSelectedQuery = savedQueries.some(query => query.id === activeQueryId);
+            const hasSelectedQuery = savedQueries.some(query => query.id === activeQueryId) || Boolean(activeSheetQuery);
             button.disabled = !hasSelectedQuery;
             button.title = hasSelectedQuery ? 'Afficher la requête sélectionnée en SQL' : 'Sélectionnez une requête enregistrée';
         }
@@ -542,48 +580,534 @@
 
         function renderSavedQueries() {
             const list = document.getElementById('savedQueryList');
-            if (!list) return;
+            const sheetList = document.getElementById('sheetQueryList');
+            if (!list || !sheetList) return;
             updateNavigationTabCounts();
             list.innerHTML = '';
-            if (savedQueries.length === 0) {
-                list.innerHTML = '<div class="text-gray-400 text-center py-3 italic">Aucune requête enregistrée.</div>';
-                return;
-            }
-
-            savedQueries.forEach(query => {
+            sheetList.innerHTML = '';
+            sheetQueries.forEach((query, index) => {
                 const row = document.createElement('div');
-                row.className = `flex items-center justify-between p-1.5 rounded group ${query.id === activeQueryId ? 'bg-red-50 text-red-800' : 'hover:bg-gray-100 text-gray-800'}`;
-                const openButton = document.createElement('button');
-                openButton.type = 'button';
-                openButton.draggable = true;
-                openButton.className = 'flex min-w-0 items-center gap-2 text-left';
-                openButton.title = `Ouvrir la requête ${query.name}`;
-                openButton.innerHTML = '<i class="fa-solid fa-table-list text-red-700"></i>';
+                row.className = `flex items-center justify-between gap-1 p-1.5 rounded group ${activeSheetQuery && activeSheetQuery.name === query.name ? 'bg-red-50 text-red-800' : 'hover:bg-gray-100 text-gray-800'}`;
+                row.title = query.description;
+
+                const nameButton = document.createElement('button');
+                nameButton.type = 'button';
+                nameButton.className = 'flex min-w-0 items-center gap-2 text-left';
+                nameButton.title = query.description || query.name;
+                nameButton.innerHTML = '<i class="fa-solid fa-table-list text-blue-700"></i>';
                 const name = document.createElement('span');
                 name.className = 'truncate';
                 name.textContent = query.name;
-                openButton.appendChild(name);
-                openButton.addEventListener('click', () => loadSavedQuery(query.id));
-                openButton.addEventListener('dblclick', event => {
+                nameButton.appendChild(name);
+                nameButton.addEventListener('click', () => loadSheetQuery(index));
+                nameButton.addEventListener('contextmenu', event => {
+                    event.preventDefault();
                     event.stopPropagation();
-                    loadSavedQuery(query.id);
+                    openSavedQueryContextMenu(index, 'shared', event.clientX, event.clientY);
+                });
+                nameButton.addEventListener('dblclick', event => {
+                    event.stopPropagation();
+                    loadSheetQuery(index);
                     showQueryDesignTab();
                 });
-                openButton.addEventListener('dragstart', event => {
-                    event.dataTransfer.setData('application/x-query-id', query.id);
-                    event.dataTransfer.effectAllowed = 'copy';
-                });
 
-                const deleteButton = document.createElement('button');
-                deleteButton.type = 'button';
-                deleteButton.className = 'px-1 text-gray-500 hover:text-red-700';
-                deleteButton.title = `Supprimer la requête ${query.name}`;
-                deleteButton.setAttribute('aria-label', `Supprimer ${query.name}`);
-                deleteButton.innerHTML = '<i class="fa-solid fa-trash-can"></i>';
-                deleteButton.addEventListener('click', () => deleteSavedQuery(query.id));
-                row.append(openButton, deleteButton);
-                list.appendChild(row);
+                const loadButton = document.createElement('button');
+                loadButton.type = 'button';
+                loadButton.className = 'shrink-0 rounded px-1.5 py-0.5 text-[11px] text-blue-700 hover:bg-blue-50';
+                loadButton.textContent = 'Charger';
+                loadButton.title = query.description || `Charger ${query.name}`;
+                loadButton.addEventListener('click', () => loadSheetQuery(index));
+                row.append(nameButton, loadButton);
+                sheetList.appendChild(row);
             });
+
+            if (sheetQueries.length === 0) {
+                const emptySheetList = document.createElement('div');
+                emptySheetList.className = 'text-gray-400 text-center py-2 italic';
+                emptySheetList.textContent = sheetQueriesLoaded ? 'Aucune requête dans la feuille.' : 'Aucune requête partagée chargée.';
+                sheetList.appendChild(emptySheetList);
+            }
+
+            if (savedQueries.length === 0) {
+                list.innerHTML = '<div class="text-gray-400 text-center py-3 italic">Aucune requête enregistrée.</div>';
+            } else {
+                savedQueries.forEach(query => {
+                    const row = document.createElement('div');
+                    row.className = `flex items-center justify-between p-1.5 rounded group ${query.id === activeQueryId ? 'bg-red-50 text-red-800' : 'hover:bg-gray-100 text-gray-800'}`;
+                    const openButton = document.createElement('button');
+                    openButton.type = 'button';
+                    openButton.draggable = true;
+                    openButton.className = 'flex min-w-0 items-center gap-2 text-left';
+                    openButton.title = `Ouvrir la requête ${query.name}`;
+                    openButton.innerHTML = '<i class="fa-solid fa-table-list text-red-700"></i>';
+                    const name = document.createElement('span');
+                    name.className = 'truncate';
+                    name.textContent = query.name;
+                    openButton.appendChild(name);
+                    openButton.addEventListener('click', () => loadSavedQuery(query.id));
+                    openButton.addEventListener('contextmenu', event => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        openSavedQueryContextMenu(query.id, 'saved', event.clientX, event.clientY);
+                    });
+                    openButton.addEventListener('dblclick', event => {
+                        event.stopPropagation();
+                        loadSavedQuery(query.id);
+                        showQueryDesignTab();
+                    });
+                    openButton.addEventListener('dragstart', event => {
+                        event.dataTransfer.setData('application/x-query-id', query.id);
+                        event.dataTransfer.effectAllowed = 'copy';
+                    });
+
+                    const deleteButton = document.createElement('button');
+                    deleteButton.type = 'button';
+                    deleteButton.className = 'px-1 text-gray-500 hover:text-red-700';
+                    deleteButton.title = `Supprimer la requête ${query.name}`;
+                    deleteButton.setAttribute('aria-label', `Supprimer ${query.name}`);
+                    deleteButton.innerHTML = '<i class="fa-solid fa-trash-can"></i>';
+                    deleteButton.addEventListener('click', () => deleteSavedQuery(query.id));
+                    row.append(openButton, deleteButton);
+                    list.appendChild(row);
+                });
+            }
+        }
+
+        async function loadSheetQueries() {
+            const status = document.getElementById('sheetQueryStatus');
+            const refreshButton = document.querySelector('#navQueriesPanel button[onclick="loadSheetQueries()"]');
+            if (sheetQueriesLoading) return;
+            sheetQueriesLoading = true;
+            if (refreshButton) refreshButton.disabled = true;
+            status.classList.remove('text-red-700');
+            status.textContent = 'Chargement des requêtes depuis Google Sheets...';
+            try {
+                const response = await fetch(QUERY_SHEET_CSV_URL, { cache: 'no-store' });
+                if (!response.ok) throw new Error(`Réponse HTTP ${response.status}`);
+                const csvText = await response.text();
+                const records = parseCsvRecords(csvText);
+                if (records.length === 0) throw new Error('La feuille ne contient aucune ligne.');
+
+                const headers = records[0].map(header => header.trim().toLowerCase());
+                const nameIndex = headers.indexOf('nom_requete');
+                const descriptionIndex = headers.indexOf('description');
+                const sqlIndex = headers.indexOf('requete');
+                if ([nameIndex, descriptionIndex, sqlIndex].some(index => index < 0)) {
+                    throw new Error('Colonnes attendues introuvables : nom_requete, description, requete.');
+                }
+
+                sheetQueries = records.slice(1)
+                    .filter(record => record.some(value => value.trim()))
+                    .map(record => ({
+                        name: (record[nameIndex] || '').trim(),
+                        description: (record[descriptionIndex] || '').trim(),
+                        sql: (record[sqlIndex] || '').trim()
+                    }))
+                    .filter(query => query.name && query.sql);
+                sheetQueriesLoaded = true;
+                status.textContent = `${sheetQueries.length} requête(s) chargée(s). Survolez un nom pour afficher sa description.`;
+                renderSavedQueries();
+            } catch (error) {
+                console.error('Échec du chargement des requêtes Google Sheets :', error);
+                status.classList.add('text-red-700');
+                status.textContent = `Impossible de charger les requêtes : ${error.message}`;
+            } finally {
+                sheetQueriesLoading = false;
+                if (refreshButton) refreshButton.disabled = false;
+            }
+        }
+
+        function parseCsvRecords(text) {
+            const records = [];
+            let record = [];
+            let value = '';
+            let quoted = false;
+            for (let index = 0; index < text.length; index++) {
+                const char = text[index];
+                if (quoted) {
+                    if (char === '"' && text[index + 1] === '"') {
+                        value += '"';
+                        index++;
+                    } else if (char === '"') {
+                        quoted = false;
+                    } else {
+                        value += char;
+                    }
+                } else if (char === '"' && value.length === 0) {
+                    quoted = true;
+                } else if (char === ',') {
+                    record.push(value);
+                    value = '';
+                } else if (char === '\n' || char === '\r') {
+                    if (char === '\r' && text[index + 1] === '\n') index++;
+                    record.push(value);
+                    records.push(record);
+                    record = [];
+                    value = '';
+                } else {
+                    value += char;
+                }
+            }
+            if (quoted) throw new Error('Le CSV contient un champ entre guillemets non terminé.');
+            if (value.length > 0 || record.length > 0) {
+                record.push(value);
+                records.push(record);
+            }
+            return records;
+        }
+
+        function splitSqlTopLevel(text, delimiter) {
+            const parts = [];
+            let start = 0;
+            let depth = 0;
+            let inBracket = false;
+            let quote = '';
+            for (let index = 0; index < text.length; index++) {
+                const char = text[index];
+                if (inBracket) {
+                    if (char === ']' && text[index + 1] === ']') index++;
+                    else if (char === ']') inBracket = false;
+                    continue;
+                }
+                if (quote) {
+                    if (char === quote && text[index + 1] === quote) index++;
+                    else if (char === quote) quote = '';
+                    continue;
+                }
+                if (char === '[') inBracket = true;
+                else if (char === '"' || char === "'") quote = char;
+                else if (char === '(') depth++;
+                else if (char === ')') depth--;
+                else if (depth === 0 && text.slice(index, index + delimiter.length).toUpperCase() === delimiter.toUpperCase()) {
+                    const before = index === 0 ? ' ' : text[index - 1];
+                    const after = text[index + delimiter.length] || ' ';
+                    const isWord = /^[A-Z]+$/i.test(delimiter);
+                    if (!isWord || (!/[\w]/.test(before) && !/[\w]/.test(after))) {
+                        parts.push(text.slice(start, index).trim());
+                        index += delimiter.length - 1;
+                        start = index + 1;
+                    }
+                }
+            }
+            parts.push(text.slice(start).trim());
+            return parts;
+        }
+
+        function findSqlKeywordIndex(text, keyword, start = 0) {
+            let depth = 0;
+            let inBracket = false;
+            let quote = '';
+            const pattern = new RegExp(`^${keyword.replace(/\s+/g, '\\s+')}\\b`, 'i');
+            for (let index = start; index < text.length; index++) {
+                const char = text[index];
+                if (inBracket) {
+                    if (char === ']' && text[index + 1] === ']') index++;
+                    else if (char === ']') inBracket = false;
+                    continue;
+                }
+                if (quote) {
+                    if (char === quote && text[index + 1] === quote) index++;
+                    else if (char === quote) quote = '';
+                    continue;
+                }
+                if (char === '[') inBracket = true;
+                else if (char === '"' || char === "'") quote = char;
+                else if (char === '(') depth++;
+                else if (char === ')') depth--;
+                else if (depth === 0 && (index === 0 || !/[\w]/.test(text[index - 1]))) {
+                    if (pattern.test(text.slice(index))) return index;
+                }
+            }
+            return -1;
+        }
+
+        function readSqlIdentifier(text, start = 0) {
+            let index = start;
+            while (/\s/.test(text[index] || '')) index++;
+            if (text[index] === '[') {
+                let value = '';
+                index++;
+                while (index < text.length) {
+                    if (text[index] === ']' && text[index + 1] === ']') {
+                        value += ']';
+                        index += 2;
+                    } else if (text[index] === ']') {
+                        return { value, end: index + 1 };
+                    } else {
+                        value += text[index++];
+                    }
+                }
+                throw new Error('Un identifiant entre crochets n’est pas terminé.');
+            }
+            const match = text.slice(index).match(/^[A-Za-z_][\w$]*/);
+            if (!match) throw new Error('Identifiant SQL attendu.');
+            return { value: match[0], end: index + match[0].length };
+        }
+
+        function readSqlReference(text) {
+            let position = 0;
+            const first = readSqlIdentifier(text, position);
+            position = first.end;
+            while (/\s/.test(text[position] || '')) position++;
+            if (text[position] === '.') {
+                const second = readSqlIdentifier(text, position + 1);
+                position = second.end;
+                return { table: first.value, field: second.value, end: position };
+            }
+            return { table: '', field: first.value, end: position };
+        }
+
+        function stripOuterSqlParentheses(text) {
+            let value = text.trim();
+            while (value.startsWith('(') && value.endsWith(')')) {
+                let depth = 0;
+                let closesAtEnd = false;
+                let inBracket = false;
+                let quote = '';
+                for (let index = 0; index < value.length; index++) {
+                    const char = value[index];
+                    if (inBracket) {
+                        if (char === ']' && value[index + 1] === ']') index++;
+                        else if (char === ']') inBracket = false;
+                        continue;
+                    }
+                    if (quote) {
+                        if (char === quote && value[index + 1] === quote) index++;
+                        else if (char === quote) quote = '';
+                        continue;
+                    }
+                    if (char === '[') inBracket = true;
+                    else if (char === '"' || char === "'") quote = char;
+                    else if (char === '(') depth++;
+                    else if (char === ')' && --depth === 0) {
+                        closesAtEnd = index === value.length - 1;
+                        break;
+                    }
+                }
+                if (!closesAtEnd) break;
+                value = value.slice(1, -1).trim();
+            }
+            return value;
+        }
+
+        function parseSheetQuerySql(sqlText) {
+            const sql = String(sqlText || '').trim().replace(/;\s*$/, '');
+            if (!/^SELECT\b/i.test(sql)) throw new Error('Seules les requêtes SELECT sont prises en charge.');
+
+            const fromIndex = findSqlKeywordIndex(sql, 'FROM', 6);
+            if (fromIndex < 0) throw new Error('Clause FROM introuvable.');
+            const selectText = sql.slice(6, fromIndex).trim().replace(/^DISTINCT\s+/i, '');
+            const whereIndex = findSqlKeywordIndex(sql, 'WHERE', fromIndex + 4);
+            const orderIndex = findSqlKeywordIndex(sql, 'ORDER BY', fromIndex + 4);
+            const endFrom = [whereIndex, orderIndex].filter(index => index >= 0).reduce((min, index) => Math.min(min, index), sql.length);
+            const fromText = sql.slice(fromIndex + 4, endFrom).trim();
+            const whereText = whereIndex < 0 ? '' : sql.slice(whereIndex + 5, orderIndex >= 0 ? orderIndex : sql.length).trim();
+            const orderText = orderIndex < 0 ? '' : sql.slice(orderIndex + 8).trim();
+
+            const aliases = new Map();
+            const tables = [];
+            const joins = [];
+            let position = 0;
+            const readTable = () => {
+                const identifier = readSqlIdentifier(fromText, position);
+                position = identifier.end;
+                const tableName = identifier.value;
+                while (/\s/.test(fromText[position] || '')) position++;
+                let alias = tableName;
+                const asMatch = fromText.slice(position).match(/^AS\s+/i);
+                if (asMatch) {
+                    position += asMatch[0].length;
+                    const aliasIdentifier = readSqlIdentifier(fromText, position);
+                    alias = aliasIdentifier.value;
+                    position = aliasIdentifier.end;
+                } else {
+                    const aliasMatch = fromText.slice(position).match(/^([A-Za-z_][\w$]*)/);
+                    if (aliasMatch && !/^(?:LEFT|RIGHT|INNER|FULL|CROSS|JOIN|ON|WHERE|ORDER)$/i.test(aliasMatch[1])) {
+                        alias = aliasMatch[1];
+                        position += aliasMatch[1].length;
+                    }
+                }
+                aliases.set(alias.toLowerCase(), tableName);
+                if (!tables.includes(tableName)) tables.push(tableName);
+                return tableName;
+            };
+
+            const primaryTable = readTable();
+            while (position < fromText.length) {
+                while (/\s/.test(fromText[position] || '')) position++;
+                if (position >= fromText.length) break;
+                const joinMatch = fromText.slice(position).match(/^(?:(LEFT|RIGHT|INNER|FULL|CROSS)(?:\s+OUTER)?\s+)?JOIN\b/i);
+                if (!joinMatch) throw new Error(`Syntaxe FROM/JOIN non prise en charge près de « ${fromText.slice(position, position + 30)} ».`);
+                const joinType = (joinMatch[1] || 'INNER').toUpperCase();
+                if (joinType === 'RIGHT' || joinType === 'FULL' || joinType === 'CROSS') {
+                    throw new Error(`${joinType} JOIN n’est pas pris en charge par le moteur de conception.`);
+                }
+                position += joinMatch[0].length;
+                const targetTable = readTable();
+                while (/\s/.test(fromText[position] || '')) position++;
+                const onMatch = fromText.slice(position).match(/^ON\b/i);
+                if (!onMatch) throw new Error('Clause ON manquante après JOIN.');
+                position += onMatch[0].length;
+                const nextJoinKeyword = findSqlKeywordIndex(fromText, 'JOIN', position);
+                let nextJoin = nextJoinKeyword;
+                if (nextJoinKeyword >= 0) {
+                    const joinPrefix = fromText.slice(position, nextJoinKeyword).match(/\b(?:LEFT|RIGHT|INNER|FULL|CROSS)(?:\s+OUTER)?\s*$/i);
+                    if (joinPrefix) nextJoin -= joinPrefix[0].length;
+                }
+                const onText = fromText.slice(position, nextJoin < 0 ? fromText.length : nextJoin).trim();
+                position = nextJoin < 0 ? fromText.length : nextJoin;
+                const equality = onText.match(/^(.+?)\s*=\s*(.+)$/);
+                if (!equality) throw new Error('La clause ON doit comparer deux champs avec « = ».');
+                const left = readSqlReference(equality[1].trim());
+                const right = readSqlReference(equality[2].trim());
+                if (!left.table || !right.table) throw new Error('Les champs de la clause ON doivent être qualifiés par leur table.');
+                const leftTable = aliases.get(left.table.toLowerCase());
+                const rightTable = aliases.get(right.table.toLowerCase());
+                if (leftTable === targetTable && tables.includes(rightTable)) {
+                    joins.push({ id: `sheet-${joins.length}`, fromTable: rightTable, fromField: right.field, toTable: targetTable, toField: left.field, type: joinType });
+                } else if (rightTable === targetTable && tables.includes(leftTable)) {
+                    joins.push({ id: `sheet-${joins.length}`, fromTable: leftTable, fromField: left.field, toTable: targetTable, toField: right.field, type: joinType });
+                } else {
+                    throw new Error('Chaque jointure doit relier une table déjà déclarée à la nouvelle table.');
+                }
+            }
+
+            const resolveReference = reference => {
+                let tableName = reference.table ? aliases.get(reference.table.toLowerCase()) : '';
+                if (reference.table && !tableName) throw new Error(`Table ou alias inconnu : ${reference.table}.`);
+                if (!tableName) {
+                    if (tables.length !== 1) throw new Error(`Le champ ${reference.field} doit être qualifié par sa table.`);
+                    tableName = tables[0];
+                }
+                return { table: tableName, field: reference.field };
+            };
+            const parseProjection = item => {
+                const asParts = splitSqlTopLevel(item, 'AS');
+                if (asParts.length > 2) throw new Error(`Alias de champ invalide : ${item}.`);
+                const source = asParts[0].trim();
+                const reference = readSqlReference(source);
+                if (source.slice(reference.end).trim()) throw new Error(`Expression de champ non prise en charge : ${item}.`);
+                const field = resolveReference(reference);
+                let alias = '';
+                if (asParts.length === 2) {
+                    const aliasRef = readSqlIdentifier(asParts[1]);
+                    if (asParts[1].slice(aliasRef.end).trim()) throw new Error(`Alias invalide : ${asParts[1]}.`);
+                    alias = aliasRef.value;
+                }
+                return {
+                    field: field.field,
+                    table: field.table,
+                    alias,
+                    expression: source,
+                    show: true,
+                    sort: '',
+                    criteria: '',
+                    or: '',
+                    width: 180
+                };
+            };
+            if (!selectText || selectText === '*') throw new Error('Les requêtes avec SELECT * doivent être converties en sélection explicite de champs.');
+            const queryRows = splitSqlTopLevel(selectText, ',').map(parseProjection);
+
+            const parseCondition = conditionText => {
+                const condition = stripOuterSqlParentheses(conditionText);
+                const reference = readSqlReference(condition);
+                const rest = condition.slice(reference.end).trim();
+                const operatorMatch = rest.match(/^(NOT\s+LIKE|LIKE|>=|<=|<>|=|>|<)\s*(.+)$/i);
+                if (!operatorMatch) throw new Error(`Critère SQL non pris en charge : ${condition}.`);
+                const field = resolveReference(reference);
+                const operator = operatorMatch[1].replace(/\s+/g, ' ').toUpperCase();
+                let operand = operatorMatch[2].trim();
+                if ((operand.startsWith('"') && operand.endsWith('"')) || (operand.startsWith("'") && operand.endsWith("'"))) {
+                    if (operator !== 'LIKE' && operator !== 'NOT LIKE') operand = operand.slice(1, -1);
+                }
+                if (operator === 'LIKE' || operator === 'NOT LIKE') operand = `${operator} ${operatorMatch[2].trim()}`;
+                else operand = `${operator} ${operand}`;
+                return { ...field, criterion: operand };
+            };
+
+            const conditions = whereText ? splitSqlTopLevel(whereText, 'AND') : [];
+            conditions.forEach(condition => {
+                const alternatives = splitSqlTopLevel(stripOuterSqlParentheses(condition), 'OR').map(parseCondition);
+                if (alternatives.some(item => item.table !== alternatives[0].table || item.field !== alternatives[0].field)) {
+                    throw new Error('Les conditions OR ne sont prises en charge que pour un même champ.');
+                }
+                const field = alternatives[0];
+                let row = queryRows.find(item => item.table === field.table && item.field === field.field && !item.criteria && !item.or);
+                if (!row) {
+                    row = { ...field, alias: '', expression: `${field.table}.${field.field}`, show: false, sort: '', criteria: '', or: '', width: 180 };
+                    queryRows.push(row);
+                }
+                row.criteria = alternatives.map(item => item.criterion).join(' OR ');
+            });
+
+            if (orderText) {
+                splitSqlTopLevel(orderText, ',').forEach(orderItem => {
+                    const match = orderItem.match(/^(.+?)(?:\s+(ASC|DESC))?$/i);
+                    const referenceText = match[1].trim();
+                    let row = queryRows.find(item => item.alias && item.alias.toLowerCase() === referenceText.replace(/^\[|\]$/g, '').toLowerCase());
+                    if (!row) {
+                        const reference = readSqlReference(referenceText);
+                        row = queryRows.find(item => {
+                            const field = resolveReference(reference);
+                            return item.table === field.table && item.field === field.field;
+                        });
+                    }
+                    if (!row) throw new Error(`Le tri doit porter sur un champ sélectionné : ${referenceText}.`);
+                    row.sort = (match[2] || 'ASC').toUpperCase();
+                });
+            }
+
+            while (queryRows.length < 8) queryRows.push({ field: '', table: '', alias: '', expression: '', show: false, sort: '', criteria: '', or: '', width: 180 });
+            const canvasTables = tables.map((name, index) => ({
+                name,
+                x: 40 + index * 260,
+                y: 40,
+                width: 220,
+                height: 220
+            }));
+            return { primaryTable, tables, canvasTables, joins, queryGridRows: queryRows };
+        }
+
+        function loadSheetQuery(index) {
+            const query = sheetQueries[index];
+            if (!query) return;
+            let parsed;
+            try {
+                parsed = parseSheetQuerySql(query.sql);
+            } catch (error) {
+                const status = document.getElementById('sheetQueryStatus');
+                status.classList.add('text-red-700');
+                status.textContent = `« ${query.name} » n’a pas été chargée : ${error.message}`;
+                console.error(`Requête « ${query.name} » non prise en charge :`, error);
+                return;
+            }
+            if (getQueryDefinition() !== savedQueryDefinition && !confirm('Les modifications non enregistrées seront perdues. Continuer ?')) return;
+
+            activeQueryId = null;
+            activeSheetQuery = query;
+            activeSqlText = null;
+            appState.canvasTables = parsed.canvasTables;
+            appState.joins = parsed.joins;
+            appState.queryGridRows = parsed.queryGridRows;
+            renderQueryGrid();
+            refreshNavigationPane();
+            renderCanvasTables();
+            renderSvgJoins();
+            updateQueryDesignTabLabel();
+            updateSqlButtonState();
+            savedQueryDefinition = getQueryDefinition();
+            updateSaveButtonState();
+            renderSavedQueries();
+            showQueryDesignTab();
+
+            const missingTables = parsed.tables.filter(tableName => !appState.tables[tableName]);
+            const status = document.getElementById('sheetQueryStatus');
+            status.classList.remove('text-red-700');
+            status.textContent = missingTables.length
+                ? `« ${query.name} » chargée. Tables à importer avant exécution : ${missingTables.join(', ')}.`
+                : `« ${query.name} » chargée dans la conception.`;
+            document.getElementById('statusBarMode').textContent = `Requête « ${query.name} » chargée`;
         }
 
         function saveCurrentQuery() {
@@ -597,15 +1121,152 @@
         }
 
         function openQueryNameModal() {
+            if (activeSheetQuery && pendingSaveAsNewFromSheetName === null) {
+                const sourceName = activeSheetQuery.name;
+                if (!confirm(`La requête chargée « ${sourceName} » ne peut pas être modifiée. Enregistrer les changements comme une nouvelle requête sous un nouveau nom ?`)) {
+                    pendingCloseAfterSave = false;
+                    pendingNewQueryAfterSave = false;
+                    return;
+                }
+                pendingSaveAsNewFromSheetName = sourceName;
+            }
             const modal = document.getElementById('queryNameModal');
             modal.classList.remove('hidden');
+            const isSheetCopy = pendingSaveAsNewFromSheetName !== null;
+            document.getElementById('queryNameModalTitle').textContent = isSheetCopy
+                ? 'Enregistrer comme nouvelle requête'
+                : 'Enregistrer la requête';
+            document.getElementById('queryNameSubmitButton').textContent = isSheetCopy ? 'Créer' : 'Enregistrer';
+            pendingRenameQueryId = null;
             const input = document.getElementById('queryNameInput');
             input.value = '';
+            input.placeholder = isSheetCopy ? `Nom différent de « ${pendingSaveAsNewFromSheetName} »` : '';
             input.focus();
+        }
+
+        function openSavedQueryContextMenu(queryId, source, x, y) {
+            const queryExists = source === 'shared'
+                ? sheetQueries[queryId] !== undefined
+                : savedQueries.some(query => query.id === queryId);
+            if (!queryExists) return;
+            contextMenuQueryId = queryId;
+            contextMenuQuerySource = source;
+            const menu = document.getElementById('savedQueryContextMenu');
+            menu.querySelector('[data-query-action="rename"]').disabled = source === 'shared';
+            menu.querySelector('[data-query-action="delete"]').disabled = source === 'shared';
+            menu.querySelectorAll('[data-query-action="rename"], [data-query-action="delete"]').forEach(button => {
+                button.title = source === 'shared' ? 'Les requêtes partagées sont en lecture seule. Dupliquez-la pour la modifier.' : '';
+                button.classList.toggle('cursor-not-allowed', source === 'shared');
+                button.classList.toggle('opacity-50', source === 'shared');
+            });
+            menu.classList.remove('hidden');
+            const left = Math.max(4, Math.min(x, window.innerWidth - menu.offsetWidth - 4));
+            const top = Math.max(4, Math.min(y, window.innerHeight - menu.offsetHeight - 4));
+            menu.style.left = `${left}px`;
+            menu.style.top = `${top}px`;
+            menu.querySelector('[data-query-action="duplicate"]').focus();
+        }
+
+        function handleSavedQueryContextAction(action) {
+            if (contextMenuQueryId === null) return;
+            const queryId = contextMenuQueryId;
+            const source = contextMenuQuerySource;
+            closeSavedQueryContextMenu();
+            if (action === 'duplicate') {
+                if (source === 'shared') duplicateSheetQuery(queryId);
+                else duplicateSavedQuery(queryId);
+            } else if (action === 'rename' && source === 'saved') {
+                openRenameQueryDialog(queryId);
+            } else if (action === 'delete' && source === 'saved') {
+                deleteSavedQuery(queryId);
+            }
+        }
+
+        function closeSavedQueryContextMenu() {
+            const menu = document.getElementById('savedQueryContextMenu');
+            if (menu) menu.classList.add('hidden');
+            contextMenuQueryId = null;
+            contextMenuQuerySource = 'saved';
+        }
+
+        function duplicateSheetQuery(index) {
+            const source = sheetQueries[index];
+            if (!source) return;
+            let parsed;
+            try {
+                parsed = parseSheetQuerySql(source.sql);
+            } catch (error) {
+                document.getElementById('sheetQueryStatus').textContent = `Impossible de dupliquer « ${source.name} » : ${error.message}`;
+                return;
+            }
+            const baseName = `${source.name} (copie)`;
+            let name = baseName;
+            let suffix = 2;
+            while (savedQueries.some(query => query.name.toLowerCase() === name.toLowerCase())) {
+                name = `${baseName} ${suffix++}`;
+            }
+            const now = new Date().toISOString();
+            const duplicate = {
+                id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                name,
+                canvasTables: parsed.canvasTables,
+                joins: parsed.joins,
+                queryGridRows: parsed.queryGridRows,
+                sqlText: source.sql,
+                createdAt: now,
+                updatedAt: now
+            };
+            savedQueries.push(duplicate);
+            if (!persistSavedQueries()) {
+                savedQueries = savedQueries.filter(query => query.id !== duplicate.id);
+                return;
+            }
+            renderSavedQueries();
+            document.getElementById('statusBarMode').textContent = `Requête « ${name} » dupliquée dans Mes requêtes`;
+        }
+
+        function duplicateSavedQuery(queryId) {
+            const source = savedQueries.find(query => query.id === queryId);
+            if (!source) return;
+            const baseName = `${source.name} (copie)`;
+            let name = baseName;
+            let suffix = 2;
+            while (savedQueries.some(query => query.name.toLowerCase() === name.toLowerCase())) {
+                name = `${baseName} ${suffix++}`;
+            }
+
+            const duplicate = JSON.parse(JSON.stringify(source));
+            duplicate.id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            duplicate.name = name;
+            duplicate.createdAt = new Date().toISOString();
+            duplicate.updatedAt = duplicate.createdAt;
+            savedQueries.push(duplicate);
+            if (!persistSavedQueries()) {
+                savedQueries = savedQueries.filter(query => query.id !== duplicate.id);
+                return;
+            }
+            renderSavedQueries();
+            document.getElementById('statusBarMode').textContent = `Requête « ${name} » dupliquée`;
+        }
+
+        function openRenameQueryDialog(queryId) {
+            const query = savedQueries.find(item => item.id === queryId);
+            if (!query) return;
+            pendingRenameQueryId = queryId;
+            document.getElementById('queryNameModalTitle').textContent = 'Renommer la requête';
+            document.getElementById('queryNameSubmitButton').textContent = 'Renommer';
+            document.getElementById('queryNameInput').value = query.name;
+            document.getElementById('queryNameInput').placeholder = '';
+            document.getElementById('queryNameModal').classList.remove('hidden');
+            document.getElementById('queryNameInput').focus();
+            document.getElementById('queryNameInput').select();
         }
 
         function closeQueryNameModal() {
             document.getElementById('queryNameModal').classList.add('hidden');
+            document.getElementById('queryNameInput').placeholder = '';
+            pendingRenameQueryId = null;
+            pendingSaveAsNewFromSheetName = null;
             pendingCloseAfterSave = false;
             pendingNewQueryAfterSave = false;
         }
@@ -614,6 +1275,58 @@
             event.preventDefault();
             const name = document.getElementById('queryNameInput').value.trim();
             if (!name) return;
+            if (pendingSaveAsNewFromSheetName !== null) {
+                if (name.toLowerCase() === pendingSaveAsNewFromSheetName.toLowerCase()) {
+                    alert('La nouvelle requête doit avoir un nom différent de la requête chargée.');
+                    return;
+                }
+                if (savedQueries.some(item => item.name.toLowerCase() === name.toLowerCase())) {
+                    alert(`Une requête nommée « ${name} » existe déjà. Choisissez un autre nom.`);
+                    return;
+                }
+                const query = { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, name };
+                savedQueries.push(query);
+                if (!persistQuery(query)) {
+                    savedQueries = savedQueries.filter(item => item.id !== query.id);
+                    return;
+                }
+                pendingSaveAsNewFromSheetName = null;
+                document.getElementById('queryNameModal').classList.add('hidden');
+                document.getElementById('queryNameInput').placeholder = '';
+                if (pendingCloseAfterSave) {
+                    pendingCloseAfterSave = false;
+                    window.close();
+                } else if (pendingNewQueryAfterSave) {
+                    pendingNewQueryAfterSave = false;
+                    resetToNewQuery();
+                }
+                return;
+            }
+            if (pendingRenameQueryId) {
+                const query = savedQueries.find(item => item.id === pendingRenameQueryId);
+                if (!query) {
+                    closeQueryNameModal();
+                    return;
+                }
+                const conflict = savedQueries.find(item =>
+                    item.id !== query.id && item.name.toLowerCase() === name.toLowerCase()
+                );
+                if (conflict) {
+                    alert(`Une requête nommée « ${conflict.name} » existe déjà.`);
+                    return;
+                }
+                const previousName = query.name;
+                query.name = name;
+                if (!persistSavedQueries()) {
+                    query.name = previousName;
+                    return;
+                }
+                if (activeQueryId === query.id) updateQueryDesignTabLabel();
+                renderSavedQueries();
+                document.getElementById('statusBarMode').textContent = `Requête renommée « ${name} »`;
+                closeQueryNameModal();
+                return;
+            }
             let query = savedQueries.find(item => item.name.toLowerCase() === name.toLowerCase());
             if (query && !confirm(`La requête « ${query.name} » existe déjà. La remplacer ?`)) return;
             if (!query) {
@@ -653,6 +1366,7 @@
             appState.canvasTables = [];
             appState.joins = [];
             activeQueryId = null;
+            activeSheetQuery = null;
             activeSqlText = null;
             lastQueryResults = [];
             lastQueryResultColumns = [];
@@ -672,6 +1386,7 @@
             Object.assign(query, JSON.parse(getQueryDefinition()), { updatedAt: new Date().toISOString() });
             if (!persistSavedQueries()) return false;
             activeQueryId = query.id;
+            activeSheetQuery = null;
             updateSqlButtonState();
             savedQueryDefinition = getQueryDefinition();
             updateSaveButtonState();
@@ -687,6 +1402,7 @@
             if (!query) return;
             if (getQueryDefinition() !== savedQueryDefinition && !confirm('Les modifications non enregistrées seront perdues. Continuer ?')) return;
 
+            activeSheetQuery = null;
             appState.canvasTables = query.canvasTables || [];
             appState.joins = query.joins || [];
             appState.queryGridRows = query.queryGridRows || [];
@@ -708,12 +1424,18 @@
         function deleteSavedQuery(queryId) {
             const query = savedQueries.find(item => item.id === queryId);
             if (!query || !confirm(`Supprimer la requête « ${query.name} » ?`)) return;
+            const previousQueries = savedQueries;
             savedQueries = savedQueries.filter(item => item.id !== queryId);
+            if (!persistSavedQueries()) {
+                savedQueries = previousQueries;
+                return;
+            }
             if (activeQueryId === queryId) activeQueryId = null;
             updateQueryDesignTabLabel();
             updateSqlButtonState();
-            persistSavedQueries();
+            updateSaveButtonState();
             renderSavedQueries();
+            document.getElementById('statusBarMode').textContent = `Requête « ${query.name} » supprimée`;
         }
 
         function restoreQueryDraft() {
@@ -732,6 +1454,7 @@
             appState.joins = draft.joins || [];
             appState.queryGridRows = draft.queryGridRows || appState.queryGridRows;
             activeQueryId = draft.activeQueryId || null;
+            activeSheetQuery = null;
             activeSqlText = typeof draft.sqlText === 'string' ? draft.sqlText : null;
             updateQueryDesignTabLabel();
             updateSqlButtonState();
@@ -1116,7 +1839,7 @@
             const tableCount = document.getElementById('tableTabCount');
             const queryCount = document.getElementById('queryTabCount');
             if (tableCount) tableCount.textContent = Object.keys(appState.tables).length;
-            if (queryCount) queryCount.textContent = savedQueries.length;
+            if (queryCount) queryCount.textContent = savedQueries.length + sheetQueries.length;
         }
 
         function getTableSourceColor(tableName) {
@@ -1240,6 +1963,7 @@
             document.getElementById('queriesTab').className = showTables
                 ? 'flex-1 px-3 py-1.5 text-gray-700 border-b-2 border-transparent hover:bg-white'
                 : 'flex-1 px-3 py-1.5 font-semibold text-red-700 border-b-2 border-red-700 bg-white';
+            if (!showTables && !sheetQueriesLoaded) loadSheetQueries();
         }
 
         let draggedNavigationTable = null;
@@ -1809,9 +2533,14 @@
 
                 if (fieldEl) {
                     const fieldRect = fieldEl.getBoundingClientRect();
+                    const fieldsRect = fieldEl.closest('.table-fields-scroll')?.getBoundingClientRect();
+                    const fieldY = fieldRect.top + fieldRect.height / 2;
+                    const anchorY = fieldsRect
+                        ? Math.max(fieldsRect.top + 1, Math.min(fieldY, fieldsRect.bottom - 1))
+                        : fieldY;
                     return {
-                        x: isSourceLeft ? fieldRect.right - canvasRect.left : fieldRect.left - canvasRect.left,
-                        y: fieldRect.top - canvasRect.top + fieldRect.height / 2
+                        x: (isSourceLeft ? cardRect.right : cardRect.left) - canvasRect.left,
+                        y: anchorY - canvasRect.top
                     };
                 }
 
@@ -1933,6 +2662,16 @@
         function initQueryGrid() {
             appState.queryGridRows = Array.from({ length: 8 }, () => ({ field: '', table: '', alias: '', expression: '', show: false, sort: '', criteria: '', or: '', width: 180 }));
             renderQueryGrid();
+        }
+
+        function addQueryColumn() {
+            appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', show: false, sort: '', criteria: '', or: '', width: 180 });
+            renderQueryGrid();
+            updateSaveButtonState();
+            const gridScroller = document.querySelector('#queryGridPanel > .flex-1.overflow-auto');
+            if (gridScroller) gridScroller.scrollLeft = gridScroller.scrollWidth;
+            const fieldInput = document.querySelector(`#queryGridBody [data-row="${appState.queryGridRows.length - 1}"][data-col="field"]`);
+            if (fieldInput) fieldInput.focus();
         }
 
         function renderQueryGrid() {
@@ -2183,26 +2922,23 @@
         }
 
         function selectFieldForQuery(tableName, fieldName) {
-            // Insérer automatiquement dans la première ligne vide de la grille
-            for (let i = 0; i < appState.queryGridRows.length; i++) {
-                if (!appState.queryGridRows[i].field) {
-                    appState.queryGridRows[i].field = fieldName;
-                    appState.queryGridRows[i].table = tableName;
-                    appState.queryGridRows[i].alias = '';
-                    appState.queryGridRows[i].expression = fieldName;
-                    appState.queryGridRows[i].show = true;
-
-                    // Mettre à jour l'UI de la grille
-                    const tbody = document.getElementById('queryGridBody');
-                    tbody.querySelector(`[data-row="${i}"][data-col="field"]`).value = `${tableName}.${fieldName}`;
-                    const aliasInput = tbody.querySelector(`[data-row="${i}"][data-col="alias"]`);
-                    if (aliasInput) aliasInput.value = '';
-                    tbody.querySelector(`[data-row="${i}"][data-col="show"]`).checked = true;
-                    tbody.querySelector(`[data-row="${i}"][aria-label="Retirer ce champ"]`).style.display = 'inline-flex';
-                    syncQueryFieldHighlights();
-                    break;
-                }
+            let columnIndex = appState.queryGridRows.findIndex(queryRow => !queryRow.field);
+            if (columnIndex < 0) {
+                appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', show: false, sort: '', criteria: '', or: '', width: 180 });
+                columnIndex = appState.queryGridRows.length - 1;
             }
+            appState.queryGridRows[columnIndex] = {
+                ...appState.queryGridRows[columnIndex],
+                field: fieldName,
+                table: tableName,
+                alias: '',
+                expression: fieldName,
+                show: true
+            };
+            renderQueryGrid();
+            updateSaveButtonState();
+            const gridScroller = document.querySelector('#queryGridPanel > .flex-1.overflow-auto');
+            if (gridScroller) gridScroller.scrollLeft = gridScroller.scrollWidth;
         }
 
         function updateQueryGrid(e) {
@@ -2373,8 +3109,20 @@
         }
 
         function generateQuerySql() {
-            if (Object.keys(appState.tables).length === 0) return '-- Aucune table n’est chargée.';
-            const primaryTable = getQueryPrimaryTable();
+            const availableTables = new Set([
+                ...Object.keys(appState.tables),
+                ...appState.canvasTables.map(table => table.name)
+            ]);
+            if (availableTables.size === 0) return '-- Aucune table dans la requête.';
+
+            const firstJoin = appState.joins.find(join =>
+                availableTables.has(join.fromTable) && availableTables.has(join.toTable)
+            );
+            const selectedField = appState.queryGridRows.find(row => row.show && row.field && row.table);
+            const primaryTable = firstJoin?.fromTable
+                || (selectedField && availableTables.has(selectedField.table) ? selectedField.table : '')
+                || appState.canvasTables.find(table => availableTables.has(table.name))?.name
+                || Object.keys(appState.tables)[0];
 
             const selectedFields = appState.queryGridRows.filter(row => row.show && row.field);
             const selectLines = selectedFields.length > 0
@@ -2386,7 +3134,7 @@
             const sqlLines = ['SELECT', selectLines.join(',\n'), `FROM ${quoteSqlIdentifier(primaryTable)}`];
 
             appState.joins.forEach(join => {
-                if (!appState.tables[join.fromTable] || !appState.tables[join.toTable]) return;
+                if (!availableTables.has(join.fromTable) || !availableTables.has(join.toTable)) return;
                 const joinType = ['INNER', 'LEFT', 'RIGHT'].includes(join.type) ? join.type : 'INNER';
                 sqlLines.push(
                     `${joinType} JOIN ${quoteSqlIdentifier(join.toTable)} ON ${quoteSqlIdentifier(join.fromTable)}.${quoteSqlIdentifier(join.fromField)} = ${quoteSqlIdentifier(join.toTable)}.${quoteSqlIdentifier(join.toField)}`
@@ -2413,8 +3161,8 @@
         }
 
         function showSqlView() {
-            if (!savedQueries.some(query => query.id === activeQueryId)) return;
-            document.getElementById('sqlQueryText').value = activeSqlText !== null ? activeSqlText : generateQuerySql();
+            if (!savedQueries.some(query => query.id === activeQueryId) && !activeSheetQuery) return;
+            document.getElementById('sqlQueryText').value = generateQuerySql();
             const modal = document.getElementById('sqlViewModal');
             modal.classList.remove('hidden');
             modal.classList.add('flex');
@@ -2427,7 +3175,9 @@
 
         function saveSqlView() {
             updateSqlEditorState();
-            if (saveCurrentQuery()) closeSqlView();
+            if (saveCurrentQuery() || !document.getElementById('queryNameModal').classList.contains('hidden')) {
+                closeSqlView();
+            }
         }
 
         function closeSqlView() {
@@ -2440,7 +3190,7 @@
         function updateQueryDesignTabLabel() {
             const queryTab = document.getElementById('queryDesignTab');
             if (!queryTab) return;
-            const activeQuery = savedQueries.find(query => query.id === activeQueryId);
+            const activeQuery = savedQueries.find(query => query.id === activeQueryId) || activeSheetQuery;
             const label = activeQuery ? activeQuery.name : 'Conception de requête';
             queryTab.innerHTML = '<i class="fa-solid fa-diagram-project mr-1"></i>';
             queryTab.appendChild(document.createTextNode(label));
@@ -2562,10 +3312,14 @@
             openTableTab(tableName);
         }
 
-        function renderVirtualTable(container, columns, rows, getCellValue) {
+        function renderVirtualTable(container, columns, rows, getCellValue, onFilterChange = null) {
             const rowHeight = 28;
             const overscan = 8;
             const columnTemplate = columns.map(() => 'minmax(160px, 1fr)').join(' ');
+            const columnFilters = columns.map(() => ({ selectedValues: null, textFilter: null }));
+            const filterButtons = [];
+            let sortState = { columnIndex: -1, direction: 1 };
+            let closeColumnMenu = () => {};
             const viewport = document.createElement('div');
             viewport.className = 'h-full overflow-auto bg-white text-xs';
 
@@ -2575,38 +3329,297 @@
             const header = document.createElement('div');
             header.className = 'sticky top-0 z-10 grid border-b border-gray-300 bg-gray-200';
             header.style.gridTemplateColumns = columnTemplate;
-            columns.forEach(column => {
+            columns.forEach((column, columnIndex) => {
                 const cell = document.createElement('div');
-                cell.className = 'border-r border-gray-300 p-2 font-bold text-gray-700';
-                cell.textContent = column.alias || `${column.table ? column.table + '.' : ''}${column.field}`;
+                cell.className = 'flex items-center justify-between gap-1 border-r border-gray-300 p-1.5 text-gray-700';
+                const title = document.createElement('div');
+                title.className = 'min-w-0 truncate font-bold';
+                title.textContent = column.alias || `${column.table ? column.table + '.' : ''}${column.field}`;
+                title.title = title.textContent;
+                const menuButton = document.createElement('button');
+                menuButton.type = 'button';
+                menuButton.className = 'shrink-0 rounded px-1.5 py-1 text-gray-600 hover:bg-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-500';
+                menuButton.setAttribute('aria-label', `Filtrer la colonne ${title.textContent}`);
+                menuButton.setAttribute('aria-haspopup', 'true');
+                menuButton.title = 'Trier et filtrer';
+                menuButton.innerHTML = '<i class="fa-solid fa-filter"></i>';
+                filterButtons[columnIndex] = menuButton;
+                menuButton.addEventListener('click', event => {
+                    event.stopPropagation();
+                    closeColumnMenu();
+
+                    const menu = document.createElement('div');
+                    menu.className = 'fixed z-[90] w-[290px] overflow-hidden rounded border border-gray-500 bg-[#2b2b2b] p-2 text-sm text-white shadow-xl';
+                    menu.setAttribute('role', 'dialog');
+                    menu.setAttribute('aria-label', `Trier et filtrer ${title.textContent}`);
+                    const menuButtonClass = 'block w-full px-2 py-1.5 text-left hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40';
+                    const makeMenuButton = (label, action, disabled = false) => {
+                        const button = document.createElement('button');
+                        button.type = 'button';
+                        button.className = menuButtonClass;
+                        button.textContent = label;
+                        button.disabled = disabled;
+                        button.addEventListener('click', action);
+                        return button;
+                    };
+                    const hasActiveFilter = columnFilters[columnIndex].selectedValues !== null || columnFilters[columnIndex].textFilter !== null;
+
+                    menu.appendChild(makeMenuButton('Trier de A à Z', () => {
+                        sortState = { columnIndex, direction: 1 };
+                        viewport.scrollTop = 0;
+                        renderVisibleRows();
+                        closeColumnMenu();
+                    }));
+                    menu.appendChild(makeMenuButton('Trier de Z à A', () => {
+                        sortState = { columnIndex, direction: -1 };
+                        viewport.scrollTop = 0;
+                        renderVisibleRows();
+                        closeColumnMenu();
+                    }));
+                    menu.appendChild(makeMenuButton(`Effacer le filtre dans ${title.textContent}`, () => {
+                        columnFilters[columnIndex] = { selectedValues: null, textFilter: null };
+                        viewport.scrollTop = 0;
+                        renderVisibleRows();
+                        closeColumnMenu();
+                    }, !hasActiveFilter));
+
+                    const textFilterSection = document.createElement('div');
+                    textFilterSection.className = 'border-t border-gray-600 pt-1';
+                    const textFilterToggle = makeMenuButton('Filtres de texte  ›', () => {
+                        textFilterForm.classList.toggle('hidden');
+                    });
+                    textFilterSection.appendChild(textFilterToggle);
+                    const textFilterForm = document.createElement('div');
+                    textFilterForm.className = 'hidden space-y-2 px-2 pb-2';
+                    const textOperator = document.createElement('select');
+                    textOperator.className = 'w-full rounded border border-gray-400 bg-white px-2 py-1 text-black';
+                    textOperator.setAttribute('aria-label', 'Opérateur du filtre de texte');
+                    [
+                        ['contains', 'Contient'],
+                        ['notContains', 'Ne contient pas'],
+                        ['equals', 'Égal à'],
+                        ['notEquals', 'Différent de'],
+                        ['startsWith', 'Commence par'],
+                        ['endsWith', 'Finit par'],
+                        ['isBlank', 'Est vide'],
+                        ['isNotBlank', 'N’est pas vide']
+                    ].forEach(([value, label]) => {
+                        const option = document.createElement('option');
+                        option.value = value;
+                        option.textContent = label;
+                        textOperator.appendChild(option);
+                    });
+                    const textValue = document.createElement('input');
+                    textValue.type = 'search';
+                    textValue.className = 'w-full rounded border border-gray-400 bg-white px-2 py-1 text-black';
+                    textValue.placeholder = 'Valeur…';
+                    textValue.setAttribute('aria-label', 'Valeur du filtre de texte');
+                    const syncTextValue = () => {
+                        textValue.disabled = textOperator.value === 'isBlank' || textOperator.value === 'isNotBlank';
+                    };
+                    textOperator.addEventListener('change', syncTextValue);
+                    textFilterForm.append(textOperator, textValue);
+                    const textFilterActions = document.createElement('div');
+                    textFilterActions.className = 'flex justify-end gap-2';
+                    const cancelTextFilter = makeMenuButton('Annuler', () => textFilterForm.classList.add('hidden'));
+                    cancelTextFilter.className = 'rounded border border-gray-500 px-2 py-1 hover:bg-gray-700';
+                    const applyTextFilter = makeMenuButton('Appliquer', () => {
+                        const operator = textOperator.value;
+                        const criterion = textValue.value.trim().toLocaleLowerCase();
+                        columnFilters[columnIndex].textFilter = criterion || operator === 'isBlank' || operator === 'isNotBlank'
+                            ? { operator, value: criterion }
+                            : null;
+                        viewport.scrollTop = 0;
+                        renderVisibleRows();
+                        closeColumnMenu();
+                    });
+                    applyTextFilter.className = 'rounded bg-blue-700 px-2 py-1 hover:bg-blue-600';
+                    textFilterActions.append(cancelTextFilter, applyTextFilter);
+                    textFilterForm.appendChild(textFilterActions);
+                    textFilterSection.appendChild(textFilterForm);
+                    menu.appendChild(textFilterSection);
+
+                    const valuesSection = document.createElement('div');
+                    valuesSection.className = 'mt-1 border-t border-gray-600 pt-2';
+                    const searchValues = document.createElement('input');
+                    searchValues.type = 'search';
+                    searchValues.className = 'mb-2 w-full rounded border border-gray-400 bg-white px-2 py-1 text-black';
+                    searchValues.placeholder = 'Rechercher une valeur…';
+                    searchValues.setAttribute('aria-label', `Rechercher les valeurs de ${title.textContent}`);
+                    valuesSection.appendChild(searchValues);
+                    const valuesList = document.createElement('div');
+                    valuesList.className = 'max-h-52 overflow-auto rounded bg-white p-1 text-black';
+                    const uniqueValues = new Map();
+                    rows.forEach((row, rowIndex) => {
+                        const value = getCellValue(rowIndex, column);
+                        const key = value === undefined || value === null || String(value) === '' ? '' : String(value);
+                        if (!uniqueValues.has(key)) uniqueValues.set(key, key === '' ? '(Vides)' : key);
+                    });
+                    const sortedValues = [...uniqueValues.entries()].sort((first, second) =>
+                        first[0].localeCompare(second[0], undefined, { numeric: true, sensitivity: 'base' })
+                    );
+                    const selectedValues = columnFilters[columnIndex].selectedValues === null
+                        ? new Set(uniqueValues.keys())
+                        : new Set(columnFilters[columnIndex].selectedValues);
+                    const valueCheckboxes = [];
+                    const updateSelectAll = () => {
+                        selectAll.checked = valueCheckboxes.length > 0 && valueCheckboxes.every(item => item.checkbox.checked);
+                        selectAll.indeterminate = valueCheckboxes.some(item => item.checkbox.checked) && !selectAll.checked;
+                    };
+                    const selectAllLabel = document.createElement('label');
+                    selectAllLabel.className = 'mb-1 flex cursor-pointer items-center gap-2 border-b border-gray-200 px-2 py-1 font-medium';
+                    const selectAll = document.createElement('input');
+                    selectAll.type = 'checkbox';
+                    selectAll.checked = selectedValues.size === uniqueValues.size;
+                    selectAllLabel.append(selectAll, document.createTextNode('(Sélectionner tout)'));
+                    valuesList.appendChild(selectAllLabel);
+                    sortedValues.forEach(([key, label]) => {
+                        const optionLabel = document.createElement('label');
+                        optionLabel.className = 'flex cursor-pointer items-center gap-2 px-2 py-1 hover:bg-blue-50';
+                        optionLabel.dataset.filterValue = label.toLocaleLowerCase();
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.checked = selectedValues.has(key);
+                        checkbox.addEventListener('change', updateSelectAll);
+                        optionLabel.append(checkbox, document.createTextNode(label));
+                        valuesList.appendChild(optionLabel);
+                        valueCheckboxes.push({ key, checkbox, label: optionLabel });
+                    });
+                    selectAll.addEventListener('change', () => {
+                        valueCheckboxes.forEach(item => { item.checkbox.checked = selectAll.checked; });
+                        selectAll.indeterminate = false;
+                    });
+                    searchValues.addEventListener('input', () => {
+                        const query = searchValues.value.toLocaleLowerCase();
+                        valueCheckboxes.forEach(item => {
+                            item.label.classList.toggle('hidden', !item.label.dataset.filterValue.includes(query));
+                        });
+                    });
+                    valuesSection.appendChild(valuesList);
+
+                    const valueActions = document.createElement('div');
+                    valueActions.className = 'mt-2 flex justify-end gap-2';
+                    const cancelValues = makeMenuButton('Annuler', () => closeColumnMenu());
+                    cancelValues.className = 'rounded border border-gray-500 px-3 py-1 hover:bg-gray-700';
+                    const applyValues = makeMenuButton('OK', () => {
+                        columnFilters[columnIndex].selectedValues = selectAll.checked
+                            ? null
+                            : new Set(valueCheckboxes.filter(item => item.checkbox.checked).map(item => item.key));
+                        viewport.scrollTop = 0;
+                        renderVisibleRows();
+                        closeColumnMenu();
+                    });
+                    applyValues.className = 'rounded bg-white px-4 py-1 text-black hover:bg-gray-200';
+                    valueActions.append(cancelValues, applyValues);
+                    menu.append(valuesSection, valueActions);
+                    document.body.appendChild(menu);
+
+                    const rect = menuButton.getBoundingClientRect();
+                    const menuWidth = 290;
+                    menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8))}px`;
+                    menu.style.top = `${Math.max(8, Math.min(rect.bottom, window.innerHeight - Math.min(menu.offsetHeight, window.innerHeight - 16) - 8))}px`;
+                    const handleOutsideClick = outsideEvent => {
+                        if (!menu.contains(outsideEvent.target) && outsideEvent.target !== menuButton) closeColumnMenu();
+                    };
+                    const handleEscape = keyboardEvent => {
+                        if (keyboardEvent.key === 'Escape') closeColumnMenu();
+                    };
+                    closeColumnMenu = () => {
+                        menu.remove();
+                        document.removeEventListener('pointerdown', handleOutsideClick);
+                        document.removeEventListener('keydown', handleEscape);
+                        closeColumnMenu = () => {};
+                    };
+                    document.addEventListener('pointerdown', handleOutsideClick);
+                    document.addEventListener('keydown', handleEscape);
+                    if (columnFilters[columnIndex].textFilter) {
+                        textOperator.value = columnFilters[columnIndex].textFilter.operator;
+                        textValue.value = columnFilters[columnIndex].textFilter.value;
+                        syncTextValue();
+                    }
+                });
+                cell.append(title, menuButton);
                 header.appendChild(cell);
             });
             table.appendChild(header);
 
             const body = document.createElement('div');
             body.className = 'relative';
-            body.style.height = `${rows.length * rowHeight}px`;
+            body.style.height = `${Math.max(rowHeight, rows.length * rowHeight)}px`;
             const visibleRows = document.createElement('div');
             visibleRows.className = 'absolute left-0 right-0';
             body.appendChild(visibleRows);
+            const emptyState = document.createElement('div');
+            emptyState.className = 'hidden p-4 text-center italic text-gray-500';
+            emptyState.textContent = 'Aucun résultat pour ces filtres.';
+            body.appendChild(emptyState);
             table.appendChild(body);
             viewport.appendChild(table);
             container.replaceChildren(viewport);
 
             const renderVisibleRows = () => {
+                filterButtons.forEach((button, columnIndex) => {
+                    const isFiltered = columnFilters[columnIndex].selectedValues !== null || columnFilters[columnIndex].textFilter !== null;
+                    const isSorted = sortState.columnIndex === columnIndex;
+                    button.classList.toggle('bg-blue-100', isFiltered || isSorted);
+                    button.classList.toggle('text-blue-700', isFiltered || isSorted);
+                    button.setAttribute('aria-pressed', String(isFiltered || isSorted));
+                    button.innerHTML = isSorted
+                        ? `<i class="fa-solid ${sortState.direction === 1 ? 'fa-sort-up' : 'fa-sort-down'}"></i>`
+                        : '<i class="fa-solid fa-filter"></i>';
+                });
+                const filteredIndices = [];
+                rows.forEach((row, rowIndex) => {
+                    const matches = columns.every((column, columnIndex) => {
+                        const filter = columnFilters[columnIndex];
+                        const value = getCellValue(rowIndex, column);
+                        const normalizedValue = value === undefined || value === null ? '' : String(value);
+                        if (filter.selectedValues !== null && !filter.selectedValues.has(normalizedValue)) return false;
+                        if (!filter.textFilter) return true;
+                        const textValue = normalizedValue.toLocaleLowerCase();
+                        const criterion = filter.textFilter.value;
+                        switch (filter.textFilter.operator) {
+                            case 'contains': return textValue.includes(criterion);
+                            case 'notContains': return !textValue.includes(criterion);
+                            case 'equals': return textValue === criterion;
+                            case 'notEquals': return textValue !== criterion;
+                            case 'startsWith': return textValue.startsWith(criterion);
+                            case 'endsWith': return textValue.endsWith(criterion);
+                            case 'isBlank': return textValue === '';
+                            case 'isNotBlank': return textValue !== '';
+                            default: return true;
+                        }
+                    });
+                    if (matches) filteredIndices.push(rowIndex);
+                });
+                if (sortState.columnIndex >= 0) {
+                    const column = columns[sortState.columnIndex];
+                    filteredIndices.sort((firstIndex, secondIndex) => {
+                        const firstValue = getCellValue(firstIndex, column);
+                        const secondValue = getCellValue(secondIndex, column);
+                        const firstText = firstValue === undefined || firstValue === null ? '' : String(firstValue);
+                        const secondText = secondValue === undefined || secondValue === null ? '' : String(secondValue);
+                        return firstText.localeCompare(secondText, undefined, { numeric: true, sensitivity: 'base' }) * sortState.direction;
+                    });
+                }
+                body.style.height = `${Math.max(rowHeight, filteredIndices.length * rowHeight)}px`;
+                emptyState.classList.toggle('hidden', filteredIndices.length > 0);
+                if (onFilterChange) onFilterChange(filteredIndices);
+
                 const firstRow = Math.max(0, Math.floor(viewport.scrollTop / rowHeight) - overscan);
-                const lastRow = Math.min(rows.length, Math.ceil((viewport.scrollTop + viewport.clientHeight) / rowHeight) + overscan);
+                const lastRow = Math.min(filteredIndices.length, Math.ceil((viewport.scrollTop + viewport.clientHeight) / rowHeight) + overscan);
                 visibleRows.style.transform = `translateY(${firstRow * rowHeight}px)`;
                 visibleRows.replaceChildren();
 
                 for (let rowIndex = firstRow; rowIndex < lastRow; rowIndex++) {
+                    const sourceRowIndex = filteredIndices[rowIndex];
                     const row = document.createElement('div');
                     row.className = `grid h-7 border-b border-gray-200 ${rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'} hover:bg-blue-50`;
                     row.style.gridTemplateColumns = columnTemplate;
                     columns.forEach(column => {
                         const cell = document.createElement('div');
                         cell.className = 'overflow-hidden text-ellipsis whitespace-nowrap border-r border-gray-200 p-2 text-gray-800';
-                        const value = getCellValue(rowIndex, column);
+                        const value = getCellValue(sourceRowIndex, column);
                         cell.textContent = value === undefined || value === null ? '' : String(value);
                         cell.title = cell.textContent;
                         row.appendChild(cell);
@@ -2615,7 +3628,10 @@
                 }
             };
 
-            viewport.addEventListener('scroll', renderVisibleRows, { passive: true });
+            viewport.addEventListener('scroll', () => {
+                closeColumnMenu();
+                renderVisibleRows();
+            }, { passive: true });
             if (typeof ResizeObserver !== 'undefined') {
                 const resizeObserver = new ResizeObserver(renderVisibleRows);
                 resizeObserver.observe(viewport);
@@ -2648,6 +3664,15 @@
         // Exécuter et afficher les résultats de la requête (Datasheet View)
         function runQueryPreview() {
             if (activeQueryWorker) return;
+            const requiredTables = new Set([
+                getQueryPrimaryTable(),
+                ...appState.joins.flatMap(join => [join.fromTable, join.toTable])
+            ].filter(Boolean));
+            const missingTables = [...requiredTables].filter(tableName => !appState.tables[tableName]);
+            if (missingTables.length > 0) {
+                showQueryExecutionError(`Importez les tables requises avant d’exécuter la requête : ${missingTables.join(', ')}.`);
+                return;
+            }
             const overlay = document.getElementById('queryExecutionOverlay');
             const executeButton = document.getElementById('executeQueryButton');
             const executionMessage = document.getElementById('queryExecutionMessage');
@@ -2662,6 +3687,9 @@
                     let appState = null;
                     const QUERY_MAX_INTERMEDIATE_ROWS = ${QUERY_MAX_INTERMEDIATE_ROWS};
                     const getQueryPrimaryTable = ${getQueryPrimaryTable.toString()};
+                    const wildcardPatternToRegExp = ${wildcardPatternToRegExp.toString()};
+                    const compareValues = ${compareValues.toString()};
+                    const matchesCriterion = ${matchesCriterion.toString()};
                     const executeQueryEngine = ${executeQueryEngine.toString()};
                     self.onmessage = event => {
                         if (event.data.type !== 'execute') return;
@@ -2783,8 +3811,14 @@
                 const row = results[rowIndex];
                 const key = column.table ? `${column.table}.${column.field}` : column.field;
                 return row[key] !== undefined ? row[key] : row[column.field];
+            }, filteredIndices => {
+                lastQueryResults = filteredIndices.map(rowIndex => results[rowIndex]);
+                const count = document.getElementById('dataPreviewCount');
+                count.textContent = filteredIndices.length === results.length
+                    ? `${results.length} enregistrement(s) trouvé(s)`
+                    : `${filteredIndices.length} / ${results.length} enregistrement(s)`;
+                document.getElementById('exportQueryResultButton').disabled = filteredIndices.length === 0;
             });
-            document.getElementById('dataPreviewCount').textContent = `${results.length} enregistrement(s) trouvé(s)`;
             document.getElementById('dataPreviewModal').classList.remove('hidden');
         }
 
