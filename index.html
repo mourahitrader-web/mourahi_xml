@@ -212,10 +212,13 @@
             <div class="flex items-center gap-3">
                 <i class="fa-solid fa-spinner animate-spin text-xl text-red-700"></i>
                 <div>
-                    <div class="font-semibold text-gray-800">Exécution de la requête...</div>
+                    <div id="queryExecutionMessage" class="font-semibold text-gray-800">Exécution de la requête...</div>
                     <div class="mt-1 text-gray-600">Le traitement peut prendre quelques instants.</div>
                 </div>
             </div>
+            <button type="button" onclick="cancelQueryExecution()" class="mt-4 w-full rounded bg-gray-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-gray-800">
+                <i class="fa-solid fa-stop mr-1"></i>Arrêter l’exécution
+            </button>
         </div>
     </div>
 
@@ -372,6 +375,10 @@
         let lastQueryResultColumns = [];
         let openTableTabs = [];
         let activeWorkspaceTab = 'query-design';
+        let activeQueryWorker = null;
+        let queryExecutionTimer = null;
+        const QUERY_EXECUTION_TIMEOUT_MS = 30000;
+        const QUERY_MAX_INTERMEDIATE_ROWS = 1000000;
 
         // Données d'exemple XML par défaut (SGS Morocco)
         const DEFAULT_SGS_XML = `<?xml version="1.0" encoding="utf-8"?>
@@ -730,8 +737,8 @@
                 try {
                     const xmlString = await readXmlFile(file, fileProgress);
                     showXmlLoading(`Analyse ${fileIndex + 1}/${files.length} : ${file.name}`, null);
-                    await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
-                    const result = loadXMLFromString(xmlString, file.name, false, true);
+                    const tableMap = await parseXmlInWorker(xmlString);
+                    const result = loadXMLTableMap(tableMap, file.name, false, true);
                     addedTableNames.push(...result.addedTableNames);
                     existingTableNames.push(...result.existingTableNames);
                 } catch (error) {
@@ -790,6 +797,89 @@
             document.getElementById('xmlLoadingOverlay').classList.add('hidden');
         }
 
+        function parseXmlInWorker(xmlString) {
+            return new Promise((resolve, reject) => {
+                const workerSource = String.raw`
+                    const decodeXml = value => value
+                        .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+                        .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)))
+                        .replace(/&#([0-9]+);/g, (_, code) => String.fromCodePoint(parseInt(code, 10)))
+                        .replace(/&lt;/g, '<')
+                        .replace(/&gt;/g, '>')
+                        .replace(/&quot;/g, '"')
+                        .replace(/&apos;/g, "'")
+                        .replace(/&amp;/g, '&');
+
+                    const parseXmlWithoutDomParser = xmlString => {
+                        const rootMatch = xmlString.match(/<([A-Za-z_][\w:.-]*)(?:\s[^>]*)?>([\s\S]*)<\/\1\s*>/);
+                        if (!rootMatch) throw new Error('Erreur de syntaxe XML détectée dans le fichier.');
+
+                        const tableMap = {};
+                        const rowPattern = /<([A-Za-z_][\w:.-]*)(?:\s[^>]*)?>([\s\S]*?)<\/\1\s*>|<([A-Za-z_][\w:.-]*)\s*\/>/g;
+                        let rowMatch;
+                        while ((rowMatch = rowPattern.exec(rootMatch[2])) !== null) {
+                            const tableName = rowMatch[1] || rowMatch[3];
+                            const row = {};
+                            const fieldPattern = /<([A-Za-z_][\w:.-]*)(?:\s[^>]*)?>([\s\S]*?)<\/\1\s*>|<([A-Za-z_][\w:.-]*)\s*\/>/g;
+                            let fieldMatch;
+                            while ((fieldMatch = fieldPattern.exec(rowMatch[2] || '')) !== null) {
+                                const fieldName = fieldMatch[1] || fieldMatch[3];
+                                row[fieldName] = decodeXml((fieldMatch[2] || '').trim());
+                            }
+                            (tableMap[tableName] || (tableMap[tableName] = [])).push(row);
+                        }
+                        return tableMap;
+                    };
+
+                    self.onmessage = event => {
+                        try {
+                            let tableMap;
+                            if (typeof DOMParser !== 'undefined') {
+                                const parser = new DOMParser();
+                                const xmlDoc = parser.parseFromString(event.data, 'text/xml');
+                                if (xmlDoc.getElementsByTagName('parsererror').length > 0) {
+                                    throw new Error('Erreur de syntaxe XML détectée dans le fichier.');
+                                }
+                                tableMap = {};
+                                const children = xmlDoc.documentElement.children;
+                                for (let i = 0; i < children.length; i++) {
+                                    const node = children[i];
+                                    const rows = tableMap[node.tagName] || (tableMap[node.tagName] = []);
+                                    const row = {};
+                                    for (let j = 0; j < node.children.length; j++) {
+                                        const field = node.children[j];
+                                        row[field.tagName] = field.textContent.trim();
+                                    }
+                                    rows.push(row);
+                                }
+                            } else {
+                                tableMap = parseXmlWithoutDomParser(event.data);
+                            }
+                            self.postMessage({ tableMap });
+                        } catch (error) {
+                            self.postMessage({ error: error.message || String(error) });
+                        }
+                    };
+                `;
+                const workerUrl = URL.createObjectURL(new Blob([workerSource], { type: 'application/javascript' }));
+                const worker = new Worker(workerUrl);
+                const finish = () => {
+                    worker.terminate();
+                    URL.revokeObjectURL(workerUrl);
+                };
+                worker.onmessage = event => {
+                    finish();
+                    if (event.data.error) reject(new Error(event.data.error));
+                    else resolve(event.data.tableMap);
+                };
+                worker.onerror = event => {
+                    finish();
+                    reject(new Error(event.message || 'Impossible d’analyser le fichier XML.'));
+                };
+                worker.postMessage(xmlString);
+            });
+        }
+
         // Parser le XML avec DOMParser et peupler l'application
         function loadXMLFromString(xmlString, fileName, showNotification = true, throwOnError = false) {
             try {
@@ -827,6 +917,21 @@
                     }
                     tableMap[tagName].push(rowObj);
                 }
+
+                return loadXMLTableMap(tableMap, fileName, showNotification, throwOnError);
+
+            } catch (err) {
+                console.error(err);
+                if (throwOnError) throw err;
+                alert("Erreur lors du traitement du fichier XML : " + err.message);
+                return null;
+            }
+        }
+
+        function loadXMLTableMap(tableMap, fileName, showNotification = true, throwOnError = false) {
+            try {
+                appState.fileName = fileName;
+                document.getElementById('currentProjectTitle').textContent = fileName;
 
                 const addedTableNames = [];
                 const existingTableNames = [];
@@ -1299,6 +1404,10 @@
             appState.queryGridRows = [];
             activeQueryId = null;
             activeSqlText = null;
+            openTableTabs = [];
+            activeWorkspaceTab = 'query-design';
+            lastQueryResults = [];
+            lastQueryResultColumns = [];
             updateQueryDesignTabLabel();
             updateSqlButtonState();
 
@@ -1306,6 +1415,13 @@
             refreshNavigationPane();
             renderCanvasTables();
             renderSvgJoins();
+            document.getElementById('tableWorkspaceContainer').replaceChildren();
+            document.getElementById('tableWorkspaceTitle').textContent = '';
+            document.getElementById('exportTableWorkspaceButton').disabled = true;
+            closeDataPreviewModal();
+            showQueryDesignTab();
+            savedQueryDefinition = getQueryDefinition();
+            updateSaveButtonState();
             updateStatusBar();
         }
 
@@ -2124,6 +2240,7 @@
             document.getElementById('erdCanvas').classList.remove('hidden');
             document.getElementById('queryGridPanel').classList.remove('hidden');
             document.getElementById('tableWorkspace').classList.add('hidden');
+            document.getElementById('tableWorkspace').classList.remove('flex');
             renderWorkspaceTabs();
         }
 
@@ -2166,6 +2283,67 @@
             openTableTab(tableName);
         }
 
+        function renderVirtualTable(container, columns, rows, getCellValue) {
+            const rowHeight = 28;
+            const overscan = 8;
+            const columnTemplate = columns.map(() => 'minmax(160px, 1fr)').join(' ');
+            const viewport = document.createElement('div');
+            viewport.className = 'h-full overflow-auto bg-white text-xs';
+
+            const table = document.createElement('div');
+            table.className = 'min-w-max';
+
+            const header = document.createElement('div');
+            header.className = 'sticky top-0 z-10 grid border-b border-gray-300 bg-gray-200';
+            header.style.gridTemplateColumns = columnTemplate;
+            columns.forEach(column => {
+                const cell = document.createElement('div');
+                cell.className = 'border-r border-gray-300 p-2 font-bold text-gray-700';
+                cell.textContent = column.alias || `${column.table ? column.table + '.' : ''}${column.field}`;
+                header.appendChild(cell);
+            });
+            table.appendChild(header);
+
+            const body = document.createElement('div');
+            body.className = 'relative';
+            body.style.height = `${rows.length * rowHeight}px`;
+            const visibleRows = document.createElement('div');
+            visibleRows.className = 'absolute left-0 right-0';
+            body.appendChild(visibleRows);
+            table.appendChild(body);
+            viewport.appendChild(table);
+            container.replaceChildren(viewport);
+
+            const renderVisibleRows = () => {
+                const firstRow = Math.max(0, Math.floor(viewport.scrollTop / rowHeight) - overscan);
+                const lastRow = Math.min(rows.length, Math.ceil((viewport.scrollTop + viewport.clientHeight) / rowHeight) + overscan);
+                visibleRows.style.transform = `translateY(${firstRow * rowHeight}px)`;
+                visibleRows.replaceChildren();
+
+                for (let rowIndex = firstRow; rowIndex < lastRow; rowIndex++) {
+                    const row = document.createElement('div');
+                    row.className = `grid h-7 border-b border-gray-200 ${rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'} hover:bg-blue-50`;
+                    row.style.gridTemplateColumns = columnTemplate;
+                    columns.forEach(column => {
+                        const cell = document.createElement('div');
+                        cell.className = 'overflow-hidden text-ellipsis whitespace-nowrap border-r border-gray-200 p-2 text-gray-800';
+                        const value = getCellValue(rowIndex, column);
+                        cell.textContent = value === undefined || value === null ? '' : String(value);
+                        cell.title = cell.textContent;
+                        row.appendChild(cell);
+                    });
+                    visibleRows.appendChild(row);
+                }
+            };
+
+            viewport.addEventListener('scroll', renderVisibleRows, { passive: true });
+            if (typeof ResizeObserver !== 'undefined') {
+                const resizeObserver = new ResizeObserver(renderVisibleRows);
+                resizeObserver.observe(viewport);
+            }
+            requestAnimationFrame(renderVisibleRows);
+        }
+
         function renderTableWorkspace(tableName) {
             const tableRows = appState.tables[tableName];
             if (!Array.isArray(tableRows)) return;
@@ -2183,58 +2361,114 @@
             if (columns.length === 0) {
                 container.innerHTML = '<div class="text-gray-500 text-center py-8 italic">Cette table ne contient aucune colonne.</div>';
             } else {
-                let html = '<table class="w-full border-collapse bg-white shadow-sm text-xs"><thead><tr class="bg-gray-200 border-b border-gray-300">';
-                columns.forEach(column => {
-                    html += `<th class="p-2 text-left border-r border-gray-300 font-bold text-gray-700">${column.field}</th>`;
-                });
-                html += '</tr></thead><tbody>';
-                tableRows.forEach((row, rowIndex) => {
-                    html += `<tr class="border-b border-gray-200 hover:bg-blue-50 ${rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'}">`;
-                    columns.forEach(column => {
-                        const value = row[column.field] === undefined || row[column.field] === null ? '' : row[column.field];
-                        html += `<td class="p-2 border-r border-gray-200 text-gray-800">${value}</td>`;
-                    });
-                    html += '</tr>';
-                });
-                html += '</tbody></table>';
-                container.innerHTML = html;
+                renderVirtualTable(container, columns, tableRows, (rowIndex, column) => tableRows[rowIndex][column.field]);
             }
         }
 
         // Exécuter et afficher les résultats de la requête (Datasheet View)
         function runQueryPreview() {
+            if (activeQueryWorker) return;
             const overlay = document.getElementById('queryExecutionOverlay');
             const executeButton = document.getElementById('executeQueryButton');
+            const executionMessage = document.getElementById('queryExecutionMessage');
             overlay.classList.remove('hidden');
+            overlay.classList.add('flex');
             executeButton.disabled = true;
+            executionMessage.textContent = 'Exécution de la requête...';
 
-            requestAnimationFrame(() => setTimeout(() => {
+            setTimeout(() => {
                 const startedAt = performance.now();
-                try {
-                    const results = executeQueryEngine();
-                    renderQueryResults(results);
-                    const elapsedMs = performance.now() - startedAt;
-                    if (elapsedMs >= 1000) {
-                        document.getElementById('statusBarMode').textContent = `Requête terminée en ${(elapsedMs / 1000).toFixed(1)} s`;
-                        document.getElementById('dataPreviewCount').textContent += ` en ${(elapsedMs / 1000).toFixed(1)} s`;
-                    } else {
-                        document.getElementById('statusBarMode').textContent = 'Requête terminée';
-                    }
-                } catch (error) {
-                    const container = document.getElementById('dataPreviewContainer');
-                    container.innerHTML = '';
-                    const errorMessage = document.createElement('div');
-                    errorMessage.className = 'mx-auto max-w-3xl border border-red-300 bg-red-50 p-4 text-red-800';
-                    errorMessage.textContent = `Erreur lors de l'exécution de la requête : ${error.message || error}`;
-                    container.appendChild(errorMessage);
-                    document.getElementById('dataPreviewCount').textContent = 'Échec de l’exécution';
-                    document.getElementById('statusBarMode').textContent = 'Erreur d’exécution';
-                    document.getElementById('dataPreviewModal').classList.remove('hidden');
-                } finally {
+                const workerSource = `
+                    let appState = null;
+                    const QUERY_MAX_INTERMEDIATE_ROWS = ${QUERY_MAX_INTERMEDIATE_ROWS};
+                    const getQueryPrimaryTable = ${getQueryPrimaryTable.toString()};
+                    const executeQueryEngine = ${executeQueryEngine.toString()};
+                    self.onmessage = event => {
+                        if (event.data.type !== 'execute') return;
+                        try {
+                            appState = event.data.state;
+                            const results = executeQueryEngine();
+                            self.postMessage({ type: 'result', results });
+                        } catch (error) {
+                            self.postMessage({ type: 'error', message: error.message || String(error) });
+                        }
+                    };
+                `;
+                const workerUrl = URL.createObjectURL(new Blob([workerSource], { type: 'application/javascript' }));
+                activeQueryWorker = new Worker(workerUrl);
+
+                const finish = () => {
+                    clearTimeout(queryExecutionTimer);
+                    queryExecutionTimer = null;
+                    activeQueryWorker?.terminate();
+                    activeQueryWorker = null;
+                    URL.revokeObjectURL(workerUrl);
                     overlay.classList.add('hidden');
+                    overlay.classList.remove('flex');
                     executeButton.disabled = false;
-                }
-            }, 0));
+                };
+
+                activeQueryWorker.onmessage = event => {
+                    const elapsedMs = performance.now() - startedAt;
+                    const message = event.data.type === 'error'
+                        ? `Erreur lors de l'exécution de la requête : ${event.data.message}`
+                        : null;
+                    finish();
+                    if (message) {
+                        showQueryExecutionError(message);
+                        return;
+                    }
+                    renderQueryResults(event.data.results);
+                    document.getElementById('statusBarMode').textContent = elapsedMs >= 1000
+                        ? `Requête terminée en ${(elapsedMs / 1000).toFixed(1)} s`
+                        : 'Requête terminée';
+                    if (elapsedMs >= 1000) {
+                        document.getElementById('dataPreviewCount').textContent += ` en ${(elapsedMs / 1000).toFixed(1)} s`;
+                    }
+                };
+                activeQueryWorker.onerror = event => {
+                    finish();
+                    showQueryExecutionError(`Erreur lors de l'exécution de la requête : ${event.message || 'Worker indisponible.'}`);
+                };
+                queryExecutionTimer = setTimeout(() => {
+                    finish();
+                    showQueryExecutionError('Exécution arrêtée automatiquement : durée supérieure à 30 secondes. Vérifiez les jointures ou ajoutez un critère.');
+                }, QUERY_EXECUTION_TIMEOUT_MS);
+                activeQueryWorker.postMessage({
+                    type: 'execute',
+                    state: {
+                        tables: appState.tables,
+                        joins: appState.joins,
+                        queryGridRows: appState.queryGridRows,
+                        canvasTables: appState.canvasTables
+                    }
+                });
+            }, 0);
+        }
+
+        function cancelQueryExecution() {
+            if (!activeQueryWorker) return;
+            clearTimeout(queryExecutionTimer);
+            queryExecutionTimer = null;
+            activeQueryWorker.terminate();
+            activeQueryWorker = null;
+            const overlay = document.getElementById('queryExecutionOverlay');
+            overlay.classList.add('hidden');
+            overlay.classList.remove('flex');
+            document.getElementById('executeQueryButton').disabled = false;
+            document.getElementById('statusBarMode').textContent = 'Exécution arrêtée';
+        }
+
+        function showQueryExecutionError(message) {
+            const container = document.getElementById('dataPreviewContainer');
+            container.innerHTML = '';
+            const errorMessage = document.createElement('div');
+            errorMessage.className = 'mx-auto max-w-3xl border border-red-300 bg-red-50 p-4 text-red-800';
+            errorMessage.textContent = message;
+            container.appendChild(errorMessage);
+            document.getElementById('dataPreviewCount').textContent = 'Échec de l’exécution';
+            document.getElementById('statusBarMode').textContent = 'Erreur d’exécution';
+            document.getElementById('dataPreviewModal').classList.remove('hidden');
         }
 
         function renderQueryResults(results) {
@@ -2264,24 +2498,11 @@
                 return;
             }
 
-            let html = '<table class="w-full border-collapse bg-white shadow-sm text-xs"><thead><tr class="bg-gray-200 border-b border-gray-300">';
-            activeColumns.forEach(col => {
-                const heading = col.alias || `${col.table ? col.table + '.' : ''}${col.field}`;
-                html += `<th class="p-2 text-left border-r border-gray-300 font-bold text-gray-700">${heading}</th>`;
+            renderVirtualTable(container, activeColumns, results, (rowIndex, column) => {
+                const row = results[rowIndex];
+                const key = column.table ? `${column.table}.${column.field}` : column.field;
+                return row[key] !== undefined ? row[key] : row[column.field];
             });
-            html += '</tr></thead><tbody>';
-
-            results.forEach((row, idx) => {
-                html += `<tr class="border-b border-gray-200 hover:bg-blue-50 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}">`;
-                activeColumns.forEach(col => {
-                    const val = row[col.table ? `${col.table}.${col.field}` : col.field] !== undefined ? row[col.table ? `${col.table}.${col.field}` : col.field] : (row[col.field] || '');
-                    html += `<td class="p-2 border-r border-gray-200 text-gray-800">${val}</td>`;
-                });
-                html += '</tr>';
-            });
-            html += '</tbody></table>';
-
-            container.innerHTML = html;
             document.getElementById('dataPreviewCount').textContent = `${results.length} enregistrement(s) trouvé(s)`;
             document.getElementById('dataPreviewModal').classList.remove('hidden');
         }
@@ -2323,34 +2544,40 @@
             // Appliquer les jointures définies
             appState.joins.forEach(join => {
                 const targetTableData = appState.tables[join.toTable] || [];
+                const targetRowsByJoinValue = new Map();
+                targetTableData.forEach(targetRow => {
+                    const targetJoinValue = targetRow[join.toField];
+                    const matchingRows = targetRowsByJoinValue.get(targetJoinValue);
+                    if (matchingRows) matchingRows.push(targetRow);
+                    else targetRowsByJoinValue.set(targetJoinValue, [targetRow]);
+                });
                 let newRows = [];
 
                 rows.forEach(row => {
                     const joinVal = row[`${join.fromTable}.${join.fromField}`];
-                    let matched = false;
+                    const matchingRows = targetRowsByJoinValue.get(joinVal) || [];
 
-                    targetTableData.forEach(targetRow => {
-                        if (targetRow[join.toField] === joinVal) {
-                            matched = true;
-                            let combined = { ...row };
+                    if (matchingRows.length > 0) {
+                        matchingRows.forEach(targetRow => {
+                            const combined = { ...row };
                             for (let k in targetRow) {
                                 combined[`${join.toTable}.${k}`] = targetRow[k];
                             }
                             newRows.push(combined);
-                        }
-                    });
-
-                    if (!matched && (join.type === 'LEFT' || join.type === 'RIGHT')) {
-                        let combined = { ...row };
-                        targetTableData.forEach(targetRow => {
-                            for (let k in targetRow) {
-                                combined[`${join.toTable}.${k}`] = '';
-                            }
+                        });
+                    } else if (join.type === 'LEFT' || join.type === 'RIGHT') {
+                        const combined = { ...row };
+                        const targetColumns = Object.keys(targetTableData[0] || {});
+                        targetColumns.forEach(column => {
+                            combined[`${join.toTable}.${column}`] = '';
                         });
                         newRows.push(combined);
                     }
                 });
                 if (newRows.length > 0) rows = newRows;
+                if (rows.length > QUERY_MAX_INTERMEDIATE_ROWS) {
+                    throw new Error(`Trop de lignes intermédiaires (${rows.length.toLocaleString()}).`);
+                }
             });
 
             // Appliquer les critères de la grille
