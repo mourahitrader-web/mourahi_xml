@@ -86,10 +86,16 @@
                     <span>Afficher SQL</span>
                 </button>
             </div>
-            <div class="flex flex-col items-center">
+            <div class="flex flex-col items-center border-r pr-4 border-gray-200">
                 <button id="saveQueryButton" onclick="saveCurrentQuery()" disabled title="Aucune modification à enregistrer" class="flex flex-col items-center p-1.5 rounded text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent">
                     <i class="fa-solid fa-floppy-disk text-xl text-blue-600 mb-1"></i>
                     <span>Enregistrer la requête</span>
+                </button>
+            </div>
+            <div class="flex flex-col items-center">
+                <button id="exportRibbonButton" type="button" onclick="exportCurrentContextToExcel()" class="flex flex-col items-center bg-emerald-700 hover:bg-emerald-800 text-white p-1.5 rounded font-semibold shadow-sm disabled:opacity-60 disabled:cursor-not-allowed">
+                    <i class="fa-solid fa-file-excel text-xl mb-1"></i>
+                    <span>Exporter Excel</span>
                 </button>
             </div>
         </div>
@@ -116,7 +122,10 @@
                     </div>
                 </div>
                 <div id="tableSelectionToolbar" class="hidden px-2 py-1.5 bg-red-50 border-b border-red-200 flex items-center justify-between gap-2">
-                    <span id="tableSelectionCount" class="text-gray-700">0 sélectionnée</span>
+                    <div class="flex items-center gap-2">
+                        <input id="selectAllTablesCheckbox" type="checkbox" class="accent-red-700" aria-label="Tout sélectionner" title="Tout sélectionner" />
+                        <span id="tableSelectionCount" class="text-gray-700">0 sélectionnée</span>
+                    </div>
                     <div class="flex items-center gap-2">
                         <button id="deleteSelectedTablesButton" onclick="deleteSelectedTables()" disabled class="bg-red-700 hover:bg-red-800 disabled:opacity-50 disabled:cursor-not-allowed text-white px-2 py-1 rounded text-xs font-semibold">
                             <i class="fa-solid fa-trash-can mr-1"></i>Supprimer
@@ -171,9 +180,6 @@
             <div id="tableWorkspace" class="hidden flex-1 min-h-0 flex-col overflow-hidden bg-[#f9f9f9]" role="tabpanel" aria-label="Données de la table">
                 <div class="flex items-center justify-between border-b border-[#c8c6c4] bg-[#e1dfdd] px-3 py-1.5">
                     <span id="tableWorkspaceTitle" class="font-semibold text-gray-700"></span>
-                    <button id="exportTableWorkspaceButton" type="button" onclick="exportQueryResults()" disabled class="bg-emerald-700 hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50 text-white px-3 py-1 rounded text-xs font-semibold">
-                        <i class="fa-solid fa-file-excel mr-1"></i>Exporter Excel
-                    </button>
                 </div>
                 <div id="tableWorkspaceContainer" class="flex-1 overflow-auto p-4"></div>
             </div>
@@ -204,6 +210,21 @@
                 <div id="xmlLoadingProgress" class="h-full bg-red-700 transition-[width] duration-150"></div>
             </div>
             <div id="xmlLoadingPercent" class="mt-2 text-right text-gray-500">0%</div>
+        </div>
+    </div>
+
+    <div id="exportLoadingOverlay" class="fixed inset-0 bg-black/40 z-[60] hidden flex items-center justify-center" role="status" aria-live="polite">
+        <div class="w-80 max-w-[90vw] bg-white rounded shadow-2xl border border-gray-400 p-5">
+            <div class="flex items-center gap-3 mb-2">
+                <i class="fa-solid fa-spinner animate-spin text-xl text-emerald-700"></i>
+                <div>
+                    <div id="exportLoadingMessage" class="font-semibold text-gray-800">Export Excel en cours...</div>
+                    <div class="mt-1 text-gray-600">Le fichier est en préparation.</div>
+                </div>
+            </div>
+            <div class="h-2 overflow-hidden rounded bg-gray-200">
+                <div id="exportLoadingProgress" class="h-full w-full animate-pulse rounded bg-emerald-700"></div>
+            </div>
         </div>
     </div>
 
@@ -438,6 +459,11 @@
             restoreQueryDraft();
             updateQueryDesignTabLabel();
             updateSqlButtonState();
+            updateActionButtonsState();
+            const selectAllCheckbox = document.getElementById('selectAllTablesCheckbox');
+            if (selectAllCheckbox) {
+                selectAllCheckbox.addEventListener('change', toggleSelectAllTables);
+            }
             document.addEventListener('input', updateSaveButtonState);
             document.addEventListener('change', updateSaveButtonState);
             document.addEventListener('click', updateSaveButtonState);
@@ -446,6 +472,25 @@
             document.addEventListener('dragend', updateSaveButtonState);
             updateSaveButtonState();
         });
+
+        function updateActionButtonsState() {
+            const executeButton = document.getElementById('executeQueryButton');
+            const exportButton = document.getElementById('exportRibbonButton');
+            const hasLoadedTables = Object.keys(appState.tables).length > 0;
+            const hasQueryResultToExport = lastQueryResults.length > 0 || lastQueryResultColumns.length > 0;
+            const hasTableTabToExport = activeWorkspaceTab !== 'query-design' && !!appState.tables[activeWorkspaceTab];
+
+            if (executeButton) {
+                executeButton.disabled = !hasLoadedTables;
+                executeButton.title = hasLoadedTables ? 'Exécuter la requête' : 'Importez une table pour exécuter la requête';
+            }
+
+            if (exportButton) {
+                const canExport = hasLoadedTables || hasQueryResultToExport || hasTableTabToExport;
+                exportButton.disabled = !canExport;
+                exportButton.title = canExport ? 'Exporter vers Excel' : 'Aucune table ni résultat à exporter';
+            }
+        }
 
         // ===== Gestion des requetes enregistrees et de l'etat brouillon =====
         function getQueryDefinition() {
@@ -609,6 +654,8 @@
             appState.joins = [];
             activeQueryId = null;
             activeSqlText = null;
+            lastQueryResults = [];
+            lastQueryResultColumns = [];
             updateQueryDesignTabLabel();
             updateSqlButtonState();
             initQueryGrid();
@@ -617,6 +664,7 @@
             refreshNavigationPane();
             renderCanvasTables();
             renderSvgJoins();
+            updateActionButtonsState();
             document.getElementById('statusBarMode').textContent = 'Nouvelle requête';
         }
 
@@ -797,6 +845,51 @@
             document.getElementById('xmlLoadingOverlay').classList.add('hidden');
         }
 
+        function showExportLoading() {
+            const overlay = document.getElementById('exportLoadingOverlay');
+            if (!overlay) return;
+            overlay.classList.remove('hidden');
+            overlay.classList.add('flex');
+        }
+
+        function hideExportLoading() {
+            const overlay = document.getElementById('exportLoadingOverlay');
+            if (!overlay) return;
+            overlay.classList.add('hidden');
+            overlay.classList.remove('flex');
+        }
+
+        function normalizeXmlTagName(tagName) {
+            if (tagName === null || tagName === undefined) return '';
+            return String(tagName).replace(/^.*:/, '').trim();
+        }
+
+        function extractXmlRowData(node) {
+            const row = {};
+
+            Array.from(node.attributes || []).forEach(attribute => {
+                const name = normalizeXmlTagName(attribute.name);
+                if (name) row[name] = String(attribute.value || '').trim();
+            });
+
+            Array.from(node.children || []).forEach(field => {
+                const fieldName = normalizeXmlTagName(field.tagName);
+                if (!fieldName) return;
+
+                if (field.children.length === 0) {
+                    row[fieldName] = (field.textContent || '').trim();
+                    return;
+                }
+
+                const nestedValues = extractXmlRowData(field);
+                Object.entries(nestedValues).forEach(([nestedKey, nestedValue]) => {
+                    row[fieldName + '.' + nestedKey] = nestedValue;
+                });
+            });
+
+            return row;
+        }
+
         function parseXmlInWorker(xmlString) {
             return new Promise((resolve, reject) => {
                 const workerSource = String.raw`
@@ -810,6 +903,34 @@
                         .replace(/&apos;/g, "'")
                         .replace(/&amp;/g, '&');
 
+                    const normalizeXmlTagName = tagName => {
+                        if (tagName === null || tagName === undefined) return '';
+                        return String(tagName).replace(/^.*:/, '').trim();
+                    };
+
+                    const extractXmlRowData = node => {
+                        const row = {};
+                        for (let i = 0; i < (node.attributes || []).length; i++) {
+                            const attribute = node.attributes[i];
+                            const name = normalizeXmlTagName(attribute.name);
+                            if (name) row[name] = String(attribute.value || '').trim();
+                        }
+                        for (let i = 0; i < node.children.length; i++) {
+                            const field = node.children[i];
+                            const fieldName = normalizeXmlTagName(field.tagName);
+                            if (!fieldName) continue;
+                            if (field.children.length === 0) {
+                                row[fieldName] = decodeXml((field.textContent || '').trim());
+                                continue;
+                            }
+                            const nestedValues = extractXmlRowData(field);
+                            for (const [nestedKey, nestedValue] of Object.entries(nestedValues)) {
+                                row[fieldName + '.' + nestedKey] = nestedValue;
+                            }
+                        }
+                        return row;
+                    };
+
                     const parseXmlWithoutDomParser = xmlString => {
                         const rootMatch = xmlString.match(/<([A-Za-z_][\w:.-]*)(?:\s[^>]*)?>([\s\S]*)<\/\1\s*>/);
                         if (!rootMatch) throw new Error('Erreur de syntaxe XML détectée dans le fichier.');
@@ -818,13 +939,13 @@
                         const rowPattern = /<([A-Za-z_][\w:.-]*)(?:\s[^>]*)?>([\s\S]*?)<\/\1\s*>|<([A-Za-z_][\w:.-]*)\s*\/>/g;
                         let rowMatch;
                         while ((rowMatch = rowPattern.exec(rootMatch[2])) !== null) {
-                            const tableName = rowMatch[1] || rowMatch[3];
+                            const tableName = normalizeXmlTagName(rowMatch[1] || rowMatch[3]);
                             const row = {};
                             const fieldPattern = /<([A-Za-z_][\w:.-]*)(?:\s[^>]*)?>([\s\S]*?)<\/\1\s*>|<([A-Za-z_][\w:.-]*)\s*\/>/g;
                             let fieldMatch;
                             while ((fieldMatch = fieldPattern.exec(rowMatch[2] || '')) !== null) {
-                                const fieldName = fieldMatch[1] || fieldMatch[3];
-                                row[fieldName] = decodeXml((fieldMatch[2] || '').trim());
+                                const fieldName = normalizeXmlTagName(fieldMatch[1] || fieldMatch[3]);
+                                if (fieldName) row[fieldName] = decodeXml((fieldMatch[2] || '').trim());
                             }
                             (tableMap[tableName] || (tableMap[tableName] = [])).push(row);
                         }
@@ -844,13 +965,9 @@
                                 const children = xmlDoc.documentElement.children;
                                 for (let i = 0; i < children.length; i++) {
                                     const node = children[i];
-                                    const rows = tableMap[node.tagName] || (tableMap[node.tagName] = []);
-                                    const row = {};
-                                    for (let j = 0; j < node.children.length; j++) {
-                                        const field = node.children[j];
-                                        row[field.tagName] = field.textContent.trim();
-                                    }
-                                    rows.push(row);
+                                    const tableName = normalizeXmlTagName(node.tagName);
+                                    const rows = tableMap[tableName] || (tableMap[tableName] = []);
+                                    rows.push(extractXmlRowData(node));
                                 }
                             } else {
                                 tableMap = parseXmlWithoutDomParser(event.data);
@@ -903,19 +1020,12 @@
                 const tableMap = {};
                 for (let i = 0; i < children.length; i++) {
                     const node = children[i];
-                    const tagName = node.tagName;
+                    const tagName = normalizeXmlTagName(node.tagName);
                     if (!tableMap[tagName]) {
                         tableMap[tagName] = [];
                     }
 
-                    // Extraire les champs enfants de la balise
-                    const rowObj = {};
-                    const fields = node.children;
-                    for (let j = 0; j < fields.length; j++) {
-                        const field = fields[j];
-                        rowObj[field.tagName] = field.textContent.trim();
-                    }
-                    tableMap[tagName].push(rowObj);
+                    tableMap[tagName].push(extractXmlRowData(node));
                 }
 
                 return loadXMLTableMap(tableMap, fileName, showNotification, throwOnError);
@@ -958,6 +1068,7 @@
                 refreshNavigationPane();
                 renderCanvasTables();
                 renderSvgJoins();
+                updateActionButtonsState();
                 updateStatusBar();
 
                 if (showNotification) {
@@ -1008,6 +1119,16 @@
             if (queryCount) queryCount.textContent = savedQueries.length;
         }
 
+        function getTableSourceColor(tableName) {
+            const sourceName = appState.tableSources[tableName] || '';
+            return appState.xmlSources[sourceName] || '#6b7280';
+        }
+
+        function isKeyFieldName(fieldName) {
+            const name = String(fieldName || '').trim();
+            return /^(?:id_|cd_|[A-Za-z]{2}_)/i.test(name);
+        }
+
         function refreshNavigationPane() {
             const listContainer = document.getElementById('navTableList');
             updateNavigationTabCounts();
@@ -1043,7 +1164,6 @@
                     </div>
                     <div class="flex items-center space-x-1">
                         ${!isOnCanvas ? `<i class="fa-solid fa-grip-vertical text-gray-400" title="Glisser vers le schéma"></i>` : `<i class="fa-solid fa-check text-emerald-600 text-[10px]" title="Présente sur le schéma"></i>`}
-                        ${tableSelectionMode ? '' : `<button onclick="deleteTableFromProject('${tName}')" title="Supprimer la table et ses données" aria-label="Supprimer ${tName}" class="text-red-600 hover:text-red-800 px-1"><i class="fa-solid fa-trash-can"></i></button>`}
                     </div>
                 `;
                 if (tableSelectionMode) {
@@ -1077,16 +1197,34 @@
 
         function updateTableSelectionToolbar() {
             const toolbar = document.getElementById('tableSelectionToolbar');
+            const selectAllCheckbox = document.getElementById('selectAllTablesCheckbox');
             if (!toolbar) return;
             toolbar.classList.toggle('hidden', !tableSelectionMode);
             const selectedCount = selectedTableNames.size;
             document.getElementById('tableSelectionCount').textContent = `${selectedCount} sélectionnée${selectedCount === 1 ? '' : 's'}`;
+            const totalCount = Object.keys(appState.tables).length;
+            if (selectAllCheckbox) {
+                selectAllCheckbox.checked = totalCount > 0 && selectedCount === totalCount;
+                selectAllCheckbox.indeterminate = totalCount > 0 && selectedCount > 0 && selectedCount < totalCount;
+            }
             document.getElementById('deleteSelectedTablesButton').disabled = selectedCount === 0;
         }
 
         function clearTableSelection() {
             tableSelectionMode = false;
             selectedTableNames.clear();
+            refreshNavigationPane();
+        }
+
+        function toggleSelectAllTables() {
+            const checkbox = document.getElementById('selectAllTablesCheckbox');
+            if (!checkbox) return;
+            const tableNames = Object.keys(appState.tables);
+            if (checkbox.checked) {
+                selectedTableNames = new Set(tableNames);
+            } else {
+                selectedTableNames.clear();
+            }
             refreshNavigationPane();
         }
 
@@ -1208,13 +1346,27 @@
         }
 
         // Rendu des cartes de tables sur le canevas ERD
+        function clampCanvasPosition(tableDef) {
+            const canvas = document.getElementById('erdCanvas');
+            if (!canvas || !tableDef) return tableDef;
+            const width = Number(tableDef.width) || 220;
+            const height = Number(tableDef.height) || 220;
+            const maxX = Math.max(20, canvas.clientWidth - width - 20);
+            const maxY = Math.max(20, canvas.clientHeight - height - 20);
+            tableDef.x = Math.max(20, Math.min(Number(tableDef.x) || 40, maxX));
+            tableDef.y = Math.max(20, Math.min(Number(tableDef.y) || 40, maxY));
+            return tableDef;
+        }
+
         function renderCanvasTables() {
             const container = document.getElementById('tablesContainer');
             container.innerHTML = '';
 
             appState.canvasTables.forEach(ct => {
+                clampCanvasPosition(ct);
                 const tableData = appState.tables[ct.name] || [];
                 const fields = tableData.length > 0 ? Object.keys(tableData[0]) : [];
+                const tableColor = getTableSourceColor(ct.name);
 
                 const card = document.createElement('div');
                 card.className = "table-card pointer-events-auto";
@@ -1226,9 +1378,12 @@
 
                 let fieldsHtml = '';
                 fields.forEach((fName, fIdx) => {
+                    const keyIcon = isKeyFieldName(fName)
+                        ? '<i class="fa-solid fa-key text-amber-600 mr-1 text-[9px]"></i>'
+                        : '';
                     fieldsHtml += `
                         <div class="field-row" id="field_${ct.name}_${fName}" data-table-name="${ct.name}" data-field-name="${fName}" draggable="true" onclick="handleFieldClick('${ct.name}', '${fName}')" ondblclick="handleFieldDoubleClick('${ct.name}', '${fName}')" ondragstart="startFieldDrag(event, '${ct.name}', '${fName}')" ondragover="allowFieldDrop(event)" ondrop="handleFieldDrop(event, '${ct.name}', '${fName}')" title="Double-cliquez pour ajouter au bas, ou cliquez pour lier les tables">
-                            <span class="truncate"><i class="fa-solid fa-key text-amber-600 mr-1 text-[9px]"></i>${fName}</span>
+                            <span class="truncate">${keyIcon}${fName}</span>
                             <span class="text-[9px] text-gray-400">txt</span>
                         </div>
                     `;
@@ -1236,16 +1391,24 @@
 
                 card.innerHTML = `
                     <header class="flex items-center justify-between cursor-move" onmousedown="initTableDrag(event, '${ct.name}')">
-                        <span class="truncate" title="${ct.name}"><i class="fa-solid fa-table mr-1 text-red-700"></i>${ct.name}</span>
+                        <span class="truncate" title="${ct.name}"><i class="fa-solid fa-table mr-1" style="color: ${tableColor};"></i>${ct.name}</span>
                         <div class="flex items-center space-x-1">
                             <button onclick="removeTableFromCanvas('${ct.name}')" class="text-gray-500 hover:text-red-700 font-bold px-1" title="Retirer du schéma">×</button>
                         </div>
                     </header>
-                    <div class="overflow-y-auto bg-white" style="height: calc(100% - 26px);">
+                    <div class="overflow-y-auto bg-white table-fields-scroll" style="height: calc(100% - 26px);">
                         ${fieldsHtml}
                     </div>
                     <div class="resize-handle" onmousedown="initTableResize(event, '${ct.name}')"></div>
                 `;
+
+                const fieldsScroll = card.querySelector('.table-fields-scroll');
+                if (fieldsScroll) {
+                    fieldsScroll.addEventListener('scroll', () => {
+                        requestAnimationFrame(renderSvgJoins);
+                    }, { passive: true });
+                }
+
                 container.appendChild(card);
             });
             syncQueryFieldHighlights();
@@ -1275,11 +1438,14 @@
 
         function onTableDrag(e) {
             if (!activeDragTable) return;
-            const canvasRect = document.getElementById('erdCanvas').getBoundingClientRect();
+            const canvas = document.getElementById('erdCanvas');
+            const canvasRect = canvas.getBoundingClientRect();
             const ct = appState.canvasTables.find(t => t.name === activeDragTable);
             if (ct) {
-                ct.x = Math.max(0, e.clientX - canvasRect.left - dragOffsetX + document.getElementById('erdCanvas').scrollLeft);
-                ct.y = Math.max(0, e.clientY - canvasRect.top - dragOffsetY + document.getElementById('erdCanvas').scrollTop);
+                const maxX = Math.max(20, canvas.clientWidth - ct.width - 20);
+                const maxY = Math.max(20, canvas.clientHeight - ct.height - 20);
+                ct.x = Math.max(20, Math.min(e.clientX - canvasRect.left - dragOffsetX + canvas.scrollLeft, maxX));
+                ct.y = Math.max(20, Math.min(e.clientY - canvasRect.top - dragOffsetY + canvas.scrollTop, maxY));
                 const card = document.querySelector(`.table-card[data-table-name="${activeDragTable}"]`);
                 if (card) {
                     card.style.left = ct.x + 'px';
@@ -1384,6 +1550,7 @@
             refreshNavigationPane();
             renderCanvasTables();
             renderSvgJoins();
+            updateActionButtonsState();
             updateStatusBar();
         }
 
@@ -1410,6 +1577,7 @@
             lastQueryResultColumns = [];
             updateQueryDesignTabLabel();
             updateSqlButtonState();
+            updateActionButtonsState();
 
             initQueryGrid();
             refreshNavigationPane();
@@ -1436,8 +1604,9 @@
                 if (!isOnCanvas) {
                     const div = document.createElement('div');
                     div.className = "flex items-center justify-between p-2 hover:bg-gray-100 rounded cursor-pointer";
+                    const tableColor = getTableSourceColor(tName);
                     div.innerHTML = `
-                        <span class="font-medium text-gray-800"><i class="fa-solid fa-table text-red-700 mr-2"></i>${tName}</span>
+                        <span class="font-medium text-gray-800"><i class="fa-solid fa-table mr-2" style="color: ${tableColor};"></i>${tName}</span>
                         <button onclick="addTableToCanvas('${tName}'); closeAddTableModal();" class="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs">Ajouter</button>
                     `;
                     modalList.appendChild(div);
@@ -1455,13 +1624,23 @@
 
         function addTableToCanvas(tableName, position = null) {
             if (!appState.canvasTables.some(t => t.name === tableName)) {
-                appState.canvasTables.push({
+                const canvas = document.getElementById('erdCanvas');
+                const initialX = position ? position.x : 40 + (appState.canvasTables.length * 30) % 220;
+                const initialY = position ? position.y : 40 + (appState.canvasTables.length * 30) % 120;
+                const newCard = {
                     name: tableName,
-                    x: position ? position.x : 100 + (appState.canvasTables.length * 30) % 300,
-                    y: position ? position.y : 100 + (appState.canvasTables.length * 30) % 200,
+                    x: initialX,
+                    y: initialY,
                     width: 220,
                     height: 220
-                });
+                };
+                if (canvas) {
+                    const maxX = Math.max(20, canvas.clientWidth - newCard.width - 20);
+                    const maxY = Math.max(20, canvas.clientHeight - newCard.height - 20);
+                    newCard.x = Math.max(20, Math.min(initialX, maxX));
+                    newCard.y = Math.max(20, Math.min(initialY, maxY));
+                }
+                appState.canvasTables.push(newCard);
                 refreshNavigationPane();
                 renderCanvasTables();
                 renderSvgJoins();
@@ -1621,6 +1800,27 @@
             defs.appendChild(arrowMarker);
             svg.appendChild(defs);
 
+            const canvasRect = document.getElementById('erdCanvas').getBoundingClientRect();
+
+            const getCardAnchor = (card, otherCard, fieldEl) => {
+                const cardRect = card.getBoundingClientRect();
+                const otherRect = otherCard.getBoundingClientRect();
+                const isSourceLeft = cardRect.left <= otherRect.left;
+
+                if (fieldEl) {
+                    const fieldRect = fieldEl.getBoundingClientRect();
+                    return {
+                        x: isSourceLeft ? fieldRect.right - canvasRect.left : fieldRect.left - canvasRect.left,
+                        y: fieldRect.top - canvasRect.top + fieldRect.height / 2
+                    };
+                }
+
+                return {
+                    x: isSourceLeft ? cardRect.right - canvasRect.left : cardRect.left - canvasRect.left,
+                    y: cardRect.top - canvasRect.top + cardRect.height / 2
+                };
+            };
+
             appState.joins.forEach(join => {
                 const cardFrom = document.querySelector(`.table-card[data-table-name="${join.fromTable}"]`);
                 const cardTo = document.querySelector(`.table-card[data-table-name="${join.toTable}"]`);
@@ -1630,28 +1830,14 @@
                 const fieldFromElem = document.getElementById(`field_${join.fromTable}_${join.fromField}`);
                 const fieldToElem = document.getElementById(`field_${join.toTable}_${join.toField}`);
 
-                const rectCanvas = document.getElementById('erdCanvas').getBoundingClientRect();
-                const rectFrom = cardFrom.getBoundingClientRect();
-                const rectTo = cardTo.getBoundingClientRect();
+                const fromAnchor = getCardAnchor(cardFrom, cardTo, fieldFromElem, true);
+                const toAnchor = getCardAnchor(cardTo, cardFrom, fieldToElem, false);
 
-                // Calculer coordonnées exactes du champ ou centre de la carte
-                let x1 = rectFrom.left - rectCanvas.left + rectFrom.width / 2;
-                let y1 = rectFrom.top - rectCanvas.top + rectFrom.height / 2;
-                if (fieldFromElem) {
-                    const fRect = fieldFromElem.getBoundingClientRect();
-                    x1 = rectFrom.left - rectCanvas.left + (rectFrom.left < rectTo.left ? rectFrom.width : 0);
-                    y1 = fRect.top - rectCanvas.top + fRect.height / 2;
-                }
+                const x1 = fromAnchor.x;
+                const y1 = fromAnchor.y;
+                const x2 = toAnchor.x;
+                const y2 = toAnchor.y;
 
-                let x2 = rectTo.left - rectCanvas.left + rectTo.width / 2;
-                let y2 = rectTo.top - rectCanvas.top + rectTo.height / 2;
-                if (fieldToElem) {
-                    const tRect = fieldToElem.getBoundingClientRect();
-                    x2 = rectTo.left - rectCanvas.left + (rectTo.left < rectFrom.left ? rectTo.width : 0);
-                    y2 = tRect.top - rectCanvas.top + tRect.height / 2;
-                }
-
-                // Dessiner la ligne SVG cliquable
                 const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
                 line.setAttribute('x1', x1);
                 line.setAttribute('y1', y1);
@@ -1689,7 +1875,6 @@
                     line.setAttribute('stroke-width', '2');
                 };
 
-                // Indicateur visuel selon le type de jointure
                 const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
                 circle.setAttribute('cx', (x1 + x2) / 2);
                 circle.setAttribute('cy', (y1 + y2) / 2);
@@ -1755,7 +1940,7 @@
             tbody.innerHTML = '';
             const gridRows = [
                 { label: 'Champ :', key: 'field', control: 'field' },
-                { label: 'Table :', key: 'table', control: 'text', placeholder: 'Table' },
+                { label: 'Libellé :', key: 'alias', control: 'text', placeholder: 'Libellé' },
                 { label: 'Tri :', key: 'sort', control: 'sort' },
                 { label: 'Afficher :', key: 'show', control: 'checkbox' },
                 { label: 'Critères :', key: 'criteria', control: 'text', placeholder: 'Critère' },
@@ -2010,7 +2195,8 @@
                     // Mettre à jour l'UI de la grille
                     const tbody = document.getElementById('queryGridBody');
                     tbody.querySelector(`[data-row="${i}"][data-col="field"]`).value = `${tableName}.${fieldName}`;
-                    tbody.querySelector(`[data-row="${i}"][data-col="table"]`).value = tableName;
+                    const aliasInput = tbody.querySelector(`[data-row="${i}"][data-col="alias"]`);
+                    if (aliasInput) aliasInput.value = '';
                     tbody.querySelector(`[data-row="${i}"][data-col="show"]`).checked = true;
                     tbody.querySelector(`[data-row="${i}"][aria-label="Retirer ce champ"]`).style.display = 'inline-flex';
                     syncQueryFieldHighlights();
@@ -2045,7 +2231,7 @@
                     if (removeButton) removeButton.style.display = hasField ? 'inline-flex' : 'none';
                 }
             }
-            if (col === 'field' || col === 'table') syncQueryFieldHighlights();
+            if (col === 'field' || col === 'alias') syncQueryFieldHighlights();
         }
 
         function syncQueryFieldHighlights() {
@@ -2070,11 +2256,104 @@
                 : quoteSqlIdentifier(queryRow.field);
         }
 
+        function wildcardPatternToRegExp(pattern) {
+            const sanitized = String(pattern ?? '')
+                .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+                .replace(/%/g, '.*')
+                .replace(/_/g, '.')
+                .replace(/\*/g, '.*');
+            return new RegExp(`^${sanitized}$`, 'i');
+        }
+
+        function matchesCriterion(value, criteriaText) {
+            const raw = String(criteriaText ?? '').trim();
+            if (!raw) return true;
+
+            const normalized = raw.replace(/\s+/g, ' ');
+            const alternatives = normalized.split(/\s+(?:OR|OU)\s+/i);
+            if (alternatives.length > 1) {
+                return alternatives.some(part => matchesCriterion(value, part));
+            }
+
+            const stringValue = value === null || value === undefined ? '' : String(value).trim();
+            const lowerValue = stringValue.toLowerCase();
+            const trimmed = normalized;
+
+            if (/^NOT\s+LIKE\s+/i.test(trimmed)) {
+                const pattern = trimmed.replace(/^NOT\s+LIKE\s+/i, '').replace(/^['"]|['"]$/g, '').trim();
+                const regex = wildcardPatternToRegExp(pattern);
+                return !regex.test(stringValue);
+            }
+
+            if (/^LIKE\s+/i.test(trimmed)) {
+                const pattern = trimmed.replace(/^LIKE\s+/i, '').replace(/^['"]|['"]$/g, '').trim();
+                const regex = wildcardPatternToRegExp(pattern);
+                return regex.test(stringValue);
+            }
+
+            if (/^NOT\s+/i.test(trimmed)) {
+                const operand = trimmed.replace(/^NOT\s+/i, '').trim();
+                if (/^(<=|>=|<>|=|<|>)\s*/.test(operand)) {
+                    const comparison = operand.match(/^(<=|>=|<>|=|<|>)\s*(.*)$/);
+                    return !compareValues(stringValue, comparison[1], comparison[2]);
+                }
+                if (/[\*%_]/.test(operand)) {
+                    const regex = wildcardPatternToRegExp(operand);
+                    return !regex.test(stringValue);
+                }
+                return !lowerValue.includes(operand.toLowerCase());
+            }
+
+            const comparison = trimmed.match(/^(<=|>=|<>|=|<|>)\s*(.*)$/);
+            if (comparison) {
+                return compareValues(stringValue, comparison[1], comparison[2]);
+            }
+
+            if (/^(IS\b|IN\b)/i.test(trimmed)) return trimmed.toUpperCase().startsWith('IS ') || trimmed.toUpperCase().startsWith('IN ');
+
+            if (/[\*%_]/.test(trimmed)) {
+                return wildcardPatternToRegExp(trimmed).test(stringValue);
+            }
+
+            return lowerValue.includes(trimmed.toLowerCase().replace(/^['"]|['"]$/g, ''));
+        }
+
+        function compareValues(actual, operator, expected) {
+            const normalizedActual = actual.trim();
+            const normalizedExpected = expected.trim();
+            const numericActual = Number(normalizedActual);
+            const numericExpected = Number(normalizedExpected);
+            const isNumeric = !Number.isNaN(numericActual) && !Number.isNaN(numericExpected);
+
+            const left = isNumeric ? numericActual : normalizedActual.toLowerCase();
+            const right = isNumeric ? numericExpected : normalizedExpected.toLowerCase();
+
+            switch (operator) {
+                case '=': return left === right;
+                case '<>': return left !== right;
+                case '>': return left > right;
+                case '<': return left < right;
+                case '>=': return left >= right;
+                case '<=': return left <= right;
+                default: return normalizedActual.toLowerCase().includes(normalizedExpected.toLowerCase());
+            }
+        }
+
         function criteriaToSql(criteria) {
-            const value = criteria.trim();
-            const comparison = value.match(/^(<=|>=|<>|=|<|>)\s*(.*)$/);
+            const value = String(criteria ?? '').trim();
+            if (!value) return '';
+
+            const alternatives = value.split(/\s+(?:OR|OU)\s+/i);
+            if (alternatives.length > 1) {
+                return alternatives.map(part => criteriaToSql(part)).filter(Boolean).join(' OR ');
+            }
+
+            const comparison = value.match(/^(<=|>=|<>|=|<|>)\s*(.*)$/i);
             if (comparison) return `${comparison[1]} ${comparison[2]}`;
-            if (/^(LIKE\b|IS\b|IN\b)/i.test(value)) return value;
+            if (/^NOT\s+LIKE\s+/i.test(value)) return value;
+            if (/^LIKE\s+/i.test(value)) return value;
+            if (/^NOT\s+/i.test(value)) return value;
+            if (/^(IS\b|IN\b)/i.test(value)) return value;
             return `LIKE "*${value.replace(/"/g, '""')}*"`;
         }
 
@@ -2351,16 +2630,17 @@
             const columns = Object.keys(tableRows[0] || {}).map(field => ({ field, table: tableName, alias: '' }));
             lastQueryResults = tableRows;
             lastQueryResultColumns = columns;
+            updateActionButtonsState();
 
             const container = document.getElementById('tableWorkspaceContainer');
             const title = document.getElementById('tableWorkspaceTitle');
             const exportButton = document.getElementById('exportTableWorkspaceButton');
-            title.innerHTML = `<i class="fa-solid fa-table mr-2"></i> Table : ${tableName}`;
-            exportButton.disabled = columns.length === 0;
+            if (title) title.innerHTML = `<i class="fa-solid fa-table mr-2"></i> Table : ${tableName}`;
+            if (exportButton) exportButton.disabled = columns.length === 0;
 
             if (columns.length === 0) {
-                container.innerHTML = '<div class="text-gray-500 text-center py-8 italic">Cette table ne contient aucune colonne.</div>';
-            } else {
+                if (container) container.innerHTML = '<div class="text-gray-500 text-center py-8 italic">Cette table ne contient aucune colonne.</div>';
+            } else if (container) {
                 renderVirtualTable(container, columns, tableRows, (rowIndex, column) => tableRows[rowIndex][column.field]);
             }
         }
@@ -2489,6 +2769,7 @@
             }
             lastQueryResults = results;
             lastQueryResultColumns = activeColumns;
+            updateActionButtonsState();
             document.getElementById('exportQueryResultButton').disabled = false;
 
             if (results.length === 0) {
@@ -2507,26 +2788,69 @@
             document.getElementById('dataPreviewModal').classList.remove('hidden');
         }
 
+        async function exportCurrentContextToExcel() {
+            showExportLoading();
+            await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 25)));
+            try {
+                if (activeWorkspaceTab !== 'query-design' && activeWorkspaceTab && appState.tables[activeWorkspaceTab]) {
+                    await exportTableToExcel(activeWorkspaceTab);
+                    return;
+                }
+                await exportQueryResults();
+            } finally {
+                hideExportLoading();
+            }
+        }
+
+        function exportTableToExcel(tableName) {
+            return new Promise((resolve, reject) => {
+                try {
+                    if (!tableName || !appState.tables[tableName] || typeof XLSX === 'undefined') {
+                        resolve();
+                        return;
+                    }
+                    const worksheet = XLSX.utils.json_to_sheet(appState.tables[tableName]);
+                    const workbook = XLSX.utils.book_new();
+                    XLSX.utils.book_append_sheet(workbook, worksheet, tableName.substring(0, 31));
+                    const baseName = appState.fileName.replace(/\.[^/.]+$/, '');
+                    XLSX.writeFile(workbook, `${baseName}_${tableName}_Table.xlsx`);
+                    resolve();
+                } catch (error) {
+                    reject(error);
+                }
+            });
+        }
+
         function exportQueryResults() {
-            if (typeof XLSX === 'undefined' || lastQueryResultColumns.length === 0) return;
+            return new Promise((resolve, reject) => {
+                try {
+                    if (typeof XLSX === 'undefined' || lastQueryResultColumns.length === 0) {
+                        resolve();
+                        return;
+                    }
 
-            const exportRows = lastQueryResults.map(row => {
-                const exportedRow = {};
-                lastQueryResultColumns.forEach(column => {
-                    const key = column.table ? `${column.table}.${column.field}` : column.field;
-                    const heading = column.alias || key;
-                    exportedRow[heading] = row[key] !== undefined ? row[key] : (row[column.field] !== undefined && row[column.field] !== null ? row[column.field] : '');
-                });
-                return exportedRow;
-            });
+                    const exportRows = lastQueryResults.map(row => {
+                        const exportedRow = {};
+                        lastQueryResultColumns.forEach(column => {
+                            const key = column.table ? `${column.table}.${column.field}` : column.field;
+                            const heading = column.alias || key;
+                            exportedRow[heading] = row[key] !== undefined ? row[key] : (row[column.field] !== undefined && row[column.field] !== null ? row[column.field] : '');
+                        });
+                        return exportedRow;
+                    });
 
-            const worksheet = XLSX.utils.json_to_sheet(exportRows, {
-                header: lastQueryResultColumns.map(column => column.alias || `${column.table ? column.table + '.' : ''}${column.field}`)
+                    const worksheet = XLSX.utils.json_to_sheet(exportRows, {
+                        header: lastQueryResultColumns.map(column => column.alias || `${column.table ? column.table + '.' : ''}${column.field}`)
+                    });
+                    const workbook = XLSX.utils.book_new();
+                    XLSX.utils.book_append_sheet(workbook, worksheet, 'Résultats');
+                    const baseName = appState.fileName.replace(/\.[^/.]+$/, '');
+                    XLSX.writeFile(workbook, `${baseName}_Resultat_Requete.xlsx`);
+                    resolve();
+                } catch (error) {
+                    reject(error);
+                }
             });
-            const workbook = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(workbook, worksheet, 'Résultats');
-            const baseName = appState.fileName.replace(/\.[^/.]+$/, '');
-            XLSX.writeFile(workbook, `${baseName}_Resultat_Requete.xlsx`);
         }
 
         // Moteur de requête local simulant MS Access
@@ -2589,16 +2913,7 @@
                 rows = rows.filter(row => {
                     let val = row[fieldKey] !== undefined ? row[fieldKey] : row[qRow.field];
                     if (val === undefined) return false;
-
-                    if (criteria.startsWith('=')) {
-                        return val == criteria.substring(1).trim().replace(/['"]/g, '');
-                    } else if (criteria.startsWith('>')) {
-                        return parseFloat(val) > parseFloat(criteria.substring(1));
-                    } else if (criteria.startsWith('<')) {
-                        return parseFloat(val) < parseFloat(criteria.substring(1));
-                    } else {
-                        return String(val).toLowerCase().includes(criteria.toLowerCase().replace(/['"]/g, ''));
-                    }
+                    return matchesCriterion(val, criteria);
                 });
             });
 
