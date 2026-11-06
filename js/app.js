@@ -696,9 +696,36 @@
             return { primaryTable, tables, canvasTables, joins, queryGridRows: queryRows };
         }
 
+        function isAdvancedAccessSql(sqlText) {
+            const sql = String(sqlText || '');
+            return /\b(?:GROUP\s+BY|HAVING|UNION(?:\s+ALL)?|TRANSFORM|PIVOT|IIF|SWITCH|CHOOSE|DCOUNT|DSUM|DLOOKUP|SELECT\s*\(|FROM\s*\()/i.test(sql);
+        }
+
+        function applyAdvancedSqlOnly(sqlText, queryName) {
+            activeSqlText = sqlText;
+            isNewQueryDraft = !activeQueryId && !activeSheetQuery;
+            updateSqlButtonState();
+            updateSaveButtonState();
+            document.getElementById('statusBarMode').textContent = queryName
+                ? `Requête avancée « ${queryName} » chargée en mode SQL`
+                : 'Requête avancée chargée en mode SQL';
+        }
+
         function loadSheetQuery(index) {
             const query = sheetQueries[index];
             if (!query) return;
+            if (isAdvancedAccessSql(query.sql)) {
+                if (getQueryDefinition() !== savedQueryDefinition && !confirm('Les modifications non enregistrées seront perdues. Continuer ?')) return;
+                activeQueryId = null;
+                activeSheetQuery = query;
+                activeSqlText = query.sql;
+                isNewQueryDraft = false;
+                updateQueryDesignTabLabel();
+                updateSqlButtonState();
+                updateSaveButtonState();
+                document.getElementById('statusBarMode').textContent = `Requête avancée « ${query.name} » chargée en mode SQL`;
+                return;
+            }
             let parsed;
             try {
                 parsed = parseSheetQuerySql(query.sql);
@@ -2934,7 +2961,7 @@
 
         function showSqlView() {
             if (!isNewQueryDraft && !savedQueries.some(query => query.id === activeQueryId) && !activeSheetQuery) return;
-            document.getElementById('sqlQueryText').value = generateQuerySql();
+            document.getElementById('sqlQueryText').value = activeSqlText || generateQuerySql();
             const modal = document.getElementById('sqlViewModal');
             modal.classList.remove('hidden');
             modal.classList.add('flex');
@@ -2956,6 +2983,11 @@
             try {
                 parsed = parseSheetQuerySql(sqlText);
             } catch (error) {
+                if (isAdvancedAccessSql(sqlText)) {
+                    applyAdvancedSqlOnly(sqlText);
+                    closeSqlView();
+                    return;
+                }
                 alert(`Impossible d’appliquer la requête SQL : ${error.message}`);
                 return;
             }
