@@ -2177,7 +2177,8 @@
 
                 if (fieldEl) {
                     const fieldRect = fieldEl.getBoundingClientRect();
-                    const fieldsRect = fieldEl.closest('.table-fields-scroll')?.getBoundingClientRect();
+                    const fieldsContainer = fieldEl.closest('.table-fields-scroll');
+                    const fieldsRect = fieldsContainer ? fieldsContainer.getBoundingClientRect() : null;
                     const fieldY = fieldRect.top + fieldRect.height / 2;
                     const anchorY = fieldsRect
                         ? Math.max(fieldsRect.top + 1, Math.min(fieldY, fieldsRect.bottom - 1))
@@ -2642,7 +2643,7 @@
         }
 
         function wildcardPatternToRegExp(pattern) {
-            const sanitized = String(pattern ?? '')
+            const sanitized = String(pattern === null || pattern === undefined ? '' : pattern)
                 .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
                 .replace(/%/g, '.*')
                 .replace(/_/g, '.')
@@ -2651,13 +2652,13 @@
         }
 
         function accessLikePattern(pattern) {
-            return String(pattern ?? '')
+            return String(pattern === null || pattern === undefined ? '' : pattern)
                 .replace(/%/g, '*')
                 .replace(/_/g, '?');
         }
 
         function normalizeMultipleExclusions(criteria) {
-            const value = String(criteria ?? '').trim();
+            const value = String(criteria === null || criteria === undefined ? '' : criteria).trim();
             if (!value) return value;
 
             let values = null;
@@ -2674,7 +2675,7 @@
         }
 
         function matchesCriterion(value, criteriaText) {
-            const raw = String(criteriaText ?? '').trim().replace(/^\s*!=\s*/, '<> ');
+            const raw = String(criteriaText === null || criteriaText === undefined ? '' : criteriaText).trim().replace(/^\s*!=\s*/, '<> ');
             if (!raw) return true;
 
             const normalized = raw.replace(/\s+/g, ' ');
@@ -2767,7 +2768,7 @@
             const items = [];
             let current = '';
             let quote = '';
-            for (const character of String(value ?? '')) {
+            for (const character of String(value === null || value === undefined ? '' : value)) {
                 if (quote) {
                     current += character;
                     if (character === quote) quote = '';
@@ -2813,15 +2814,18 @@
         }
 
         function criteriaValueForSql(criteria) {
-            const value = String(criteria ?? '').trim().replace(/^['"]|['"]$/g, '');
+            const value = String(criteria === null || criteria === undefined ? '' : criteria).trim().replace(/^['"]|['"]$/g, '');
             return `'${value.replace(/'/g, "''")}'`;
         }
 
         function combineCriteriaToSql(criteriaValues) {
-            const values = criteriaValues
-                .flatMap(criteria => String(criteria || '').trim().replace(/^\s*!=\s*/, '<> ').split(/\s+(?:OR|OU)\s+/i))
-                .map(criteria => criteria.trim())
-                .filter(Boolean);
+            const values = [];
+            criteriaValues.forEach(criteria => {
+                String(criteria || '').trim().replace(/^\s*!=\s*/, '<> ').split(/\s+(?:OR|OU)\s+/i)
+                    .forEach(value => {
+                        if (value.trim()) values.push(value.trim());
+                    });
+            });
             if (values.length > 1 && values.every(criteria => /^(?:<>|NOT\s*=)\s*/i.test(criteria))) {
                 const excludedValues = values.map(criteria => criteria.replace(/^(?:<>|NOT\s*=)\s*/i, '').trim());
                 return `NOT IN (${excludedValues.map(criteriaValueForSql).join(', ')})`;
@@ -2855,9 +2859,12 @@
                 availableTables.has(join.fromTable) && availableTables.has(join.toTable)
             );
             const selectedField = appState.queryGridRows.find(row => row.show && row.field && row.table);
-            const primaryTable = firstJoin?.fromTable
+            const primaryTable = (firstJoin ? firstJoin.fromTable : '')
                 || (selectedField && availableTables.has(selectedField.table) ? selectedField.table : '')
-                || appState.canvasTables.find(table => availableTables.has(table.name))?.name
+                || (() => {
+                    const canvasTable = appState.canvasTables.find(table => availableTables.has(table.name));
+                    return canvasTable ? canvasTable.name : '';
+                })()
                 || Object.keys(appState.tables)[0];
 
             const selectedFields = appState.queryGridRows.filter(row => row.show && row.field);
@@ -3504,10 +3511,11 @@
         // Exécuter et afficher les résultats de la requête (Datasheet View)
         function runQueryPreview() {
             if (activeQueryWorker) return;
-            const requiredTables = new Set([
-                getQueryPrimaryTable(),
-                ...appState.joins.flatMap(join => [join.fromTable, join.toTable])
-            ].filter(Boolean));
+            const requiredTableNames = [getQueryPrimaryTable()];
+            appState.joins.forEach(join => {
+                requiredTableNames.push(join.fromTable, join.toTable);
+            });
+            const requiredTables = new Set(requiredTableNames.filter(Boolean));
             const missingTables = [...requiredTables].filter(tableName => !appState.tables[tableName]);
             if (missingTables.length > 0) {
                 showQueryExecutionError(`Importez les tables requises avant d’exécuter la requête : ${missingTables.join(', ')}.`);
@@ -3552,7 +3560,7 @@
                 const finish = () => {
                     clearTimeout(queryExecutionTimer);
                     queryExecutionTimer = null;
-                    activeQueryWorker?.terminate();
+                    if (activeQueryWorker) activeQueryWorker.terminate();
                     activeQueryWorker = null;
                     URL.revokeObjectURL(workerUrl);
                     overlay.classList.add('hidden');
