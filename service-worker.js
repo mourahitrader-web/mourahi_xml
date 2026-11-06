@@ -1,10 +1,10 @@
-const CACHE_NAME = 'bigsi-xml-v8';
+const CACHE_NAME = 'bigsi-xml-v16';
 const APP_SHELL = [
     './',
     './index.html',
     './css/styles.css',
     './js/compatibility.js',
-    './js/app.js',
+    './js/app.js?cache=' + CACHE_NAME,
     './vendor/tailwind/tailwindcss.js',
     './vendor/xlsx/xlsx.full.min.js',
     './vendor/fontawesome/all.min.css',

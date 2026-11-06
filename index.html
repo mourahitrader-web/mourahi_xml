@@ -38,9 +38,9 @@
                 <input type="file" id="xmlFileInput" accept=".xml,text/xml,application/xml" multiple class="sr-only" aria-label="Sélectionner des fichiers XML" onchange="handleFileSelect(event)">
             </div>
             <div class="flex flex-col items-center border-r pr-4 border-gray-200">
-                <button onclick="deleteAllTables()" class="flex flex-col items-center hover:bg-red-50 p-1.5 rounded text-gray-700">
-                    <i class="fa-solid fa-trash-can text-xl text-red-600 mb-1"></i>
-                    <span>Supprimer toutes les tables</span>
+                <button type="button" onclick="clearAppCacheAndFields()" title="Effacer les tables importées, les champs, les requêtes sauvegardées et le brouillon local" class="flex flex-col items-center hover:bg-red-50 p-1.5 rounded text-gray-700">
+                    <i class="fa-solid fa-broom text-xl text-red-700 mb-1"></i>
+                    <span>Vider cache et champs</span>
                 </button>
             </div>
             <div class="flex flex-col items-center border-r pr-4 border-gray-200">
@@ -384,7 +384,7 @@
     </div>
 
     <script src="js/compatibility.js"></script>
-    <script src="js/app.js"></script>
+    <script src="js/app.js?cache=bigsi-xml-v16"></script>
     <script>
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function () {

@@ -117,6 +117,10 @@
             });
         }
 
+        function invalidateActiveSqlText() {
+            activeSqlText = null;
+        }
+
         function updateSaveButtonState() {
             const button = document.getElementById('saveQueryButton');
             if (!button) return;
@@ -525,13 +529,22 @@
             if (fromIndex < 0) throw new Error('Clause FROM introuvable.');
             const selectText = sql.slice(6, fromIndex).trim().replace(/^DISTINCT\s+/i, '');
             const whereIndex = findSqlKeywordIndex(sql, 'WHERE', fromIndex + 4);
+            const groupIndex = findSqlKeywordIndex(sql, 'GROUP BY', fromIndex + 4);
+            const havingIndex = findSqlKeywordIndex(sql, 'HAVING', fromIndex + 4);
             const orderIndex = findSqlKeywordIndex(sql, 'ORDER BY', fromIndex + 4);
-            const endFrom = [whereIndex, orderIndex].filter(index => index >= 0).reduce((min, index) => Math.min(min, index), sql.length);
+            const clauseIndexes = [whereIndex, groupIndex, havingIndex, orderIndex].filter(index => index >= 0);
+            const endFrom = clauseIndexes.reduce((min, index) => Math.min(min, index), sql.length);
             // Access encloses chained joins in parentheses. The designer only
             // supports table joins, so grouping parentheses can be ignored here.
             const fromText = removeFromGroupingParentheses(sql.slice(fromIndex + 4, endFrom).trim());
-            const whereText = whereIndex < 0 ? '' : sql.slice(whereIndex + 5, orderIndex >= 0 ? orderIndex : sql.length).trim();
+            const nextClauseIndex = index => clauseIndexes
+                .filter(clauseIndex => clauseIndex > index)
+                .reduce((min, clauseIndex) => Math.min(min, clauseIndex), sql.length);
+            const whereText = whereIndex < 0 ? '' : sql.slice(whereIndex + 5, nextClauseIndex(whereIndex)).trim();
+            const groupText = groupIndex < 0 ? '' : sql.slice(groupIndex + 8, nextClauseIndex(groupIndex)).trim();
+            const havingText = havingIndex < 0 ? '' : sql.slice(havingIndex + 6, nextClauseIndex(havingIndex)).trim();
             const orderText = orderIndex < 0 ? '' : sql.slice(orderIndex + 8).trim();
+            if (havingText) throw new Error('La clause HAVING n’est pas encore prise en charge.');
 
             const aliases = new Map();
             const tables = [];
@@ -642,10 +655,19 @@
 
             const parseCondition = conditionText => {
                 const condition = stripOuterSqlParentheses(conditionText);
-                const reference = readSqlReference(condition);
-                const rest = condition.slice(reference.end).trim();
+                const wrappedFunction = condition.match(/^(?:TRIM\s*\(\s*)?NZ\s*\(\s*(.+?)\s*,\s*(?:""|''|NULL)\s*\)\s*\)?\s*(IS\s+NOT\s+NULL|IS\s+NULL|NOT\s+LIKE|NOT\s+IN|NOT\s*=|LIKE|IN|>=|<=|<>|!=|=|>|<)\s*(.*)$/i);
+                const trimmedField = condition.match(/^TRIM\s*\(\s*(.+?)\s*\)\s*(IS\s+NOT\s+NULL|IS\s+NULL|NOT\s+LIKE|NOT\s+IN|NOT\s*=|LIKE|IN|>=|<=|<>|!=|=|>|<)\s*(.*)$/i);
+                const functionMatch = wrappedFunction || trimmedField;
+                const referenceText = functionMatch ? functionMatch[1].trim() : condition;
+                const reference = readSqlReference(referenceText);
+                const rest = functionMatch
+                    ? `${functionMatch[2]} ${functionMatch[3]}`
+                    : condition.slice(reference.end).trim();
                 const operatorMatch = rest.match(/^(IS\s+NOT\s+NULL|IS\s+NULL|NOT\s+LIKE|NOT\s+IN|NOT\s*=|LIKE|IN|>=|<=|<>|!=|=|>|<)\s*(.*)$/i);
                 if (!operatorMatch) throw new Error(`Critère SQL non pris en charge : ${condition}.`);
+                if (functionMatch && referenceText.slice(reference.end).trim()) {
+                    throw new Error(`Expression de champ non prise en charge : ${referenceText}.`);
+                }
                 const field = resolveReference(reference);
                 const operator = operatorMatch[1].replace(/\s+/g, ' ').toUpperCase();
                 let operand = operatorMatch[2].trim();
@@ -669,6 +691,21 @@
                 }
                 row.criteria = alternatives.map(item => item.criterion).join(' OR ');
             });
+
+            if (groupText) {
+                splitSqlTopLevel(groupText, ',').forEach(groupField => {
+                    const reference = readSqlReference(groupField);
+                    if (groupField.slice(reference.end).trim()) {
+                        throw new Error(`Expression GROUP BY non prise en charge : ${groupField}.`);
+                    }
+                    const field = resolveReference(reference);
+                    const row = queryRows.find(item => item.table === field.table && item.field === field.field);
+                    if (!row) {
+                        throw new Error(`Le champ GROUP BY ${groupField} doit être présent dans le SELECT.`);
+                    }
+                    row.total = 'GROUP BY';
+                });
+            }
 
             if (orderText) {
                 splitSqlTopLevel(orderText, ',').forEach(orderItem => {
@@ -716,18 +753,6 @@
         function loadSheetQuery(index) {
             const query = sheetQueries[index];
             if (!query) return;
-            if (isAdvancedAccessSql(query.sql)) {
-                if (getQueryDefinition() !== savedQueryDefinition && !confirm('Les modifications non enregistrées seront perdues. Continuer ?')) return;
-                activeQueryId = null;
-                activeSheetQuery = query;
-                activeSqlText = query.sql;
-                isNewQueryDraft = false;
-                updateQueryDesignTabLabel();
-                updateSqlButtonState();
-                updateSaveButtonState();
-                document.getElementById('statusBarMode').textContent = `Requête avancée « ${query.name} » chargée en mode SQL`;
-                return;
-            }
             let parsed;
             try {
                 parsed = parseSheetQuerySql(query.sql);
@@ -738,12 +763,11 @@
                 console.error(`Requête « ${query.name} » non prise en charge :`, error);
                 return;
             }
-            if (getQueryDefinition() !== savedQueryDefinition && !confirm('Les modifications non enregistrées seront perdues. Continuer ?')) return;
 
             activeQueryId = null;
             activeSheetQuery = query;
             isNewQueryDraft = false;
-            activeSqlText = null;
+            activeSqlText = query.sql;
             appState.canvasTables = parsed.canvasTables;
             appState.joins = parsed.joins;
             appState.queryGridRows = parsed.queryGridRows;
@@ -1911,6 +1935,7 @@
 
         // Retirer une table du schéma
         function removeTableFromCanvas(tableName) {
+            invalidateActiveSqlText();
             appState.canvasTables = appState.canvasTables.filter(t => t.name !== tableName);
             // Supprimer aussi les liaisons associées
             appState.joins = appState.joins.filter(j => j.fromTable !== tableName && j.toTable !== tableName);
@@ -1937,6 +1962,7 @@
         }
 
         function removeTablesFromProject(tableNames) {
+            invalidateActiveSqlText();
             const namesToDelete = new Set(tableNames);
             const lowerCaseNames = new Set(tableNames.map(name => name.toLowerCase()));
             if (linkingSource && namesToDelete.has(linkingSource.table)) clearFieldJoinSelection();
@@ -1966,6 +1992,41 @@
             if (tableCount === 0) return;
             if (!confirm(`Supprimer les ${tableCount} tables et toutes leurs données ?`)) return;
 
+            resetImportedTablesAndQuery();
+            savedQueryDefinition = getQueryDefinition();
+            updateSaveButtonState();
+            updateStatusBar();
+        }
+
+        function clearAppCacheAndFields() {
+            if (!confirm('Effacer les tables XML importées, les champs et critères de la requête, toutes les requêtes sauvegardées localement et le brouillon ? Cette action est irréversible.')) return;
+
+            try {
+                localStorage.removeItem(QUERY_STORAGE_KEY);
+                localStorage.removeItem(QUERY_DRAFT_KEY);
+            } catch (error) {
+                console.error('Impossible de supprimer les requêtes et le brouillon du stockage local :', error);
+                alert('Impossible de vider les requêtes sauvegardées du stockage local. Les données de l’application n’ont pas été effacées.');
+                return;
+            }
+
+            savedQueries = [];
+            pendingRenameQueryId = null;
+            pendingSaveAsNewFromSheetName = null;
+            closeQueryNameModal();
+            closeNewQueryConfirmation();
+            closeSqlView();
+            closeDataPreviewModal();
+            resetImportedTablesAndQuery();
+            renderSavedQueries();
+            savedQueryDefinition = getQueryDefinition();
+            updateSaveButtonState();
+            updateStatusBar();
+            document.getElementById('statusBarMode').textContent = 'Cache et champs vidés';
+        }
+
+        function resetImportedTablesAndQuery() {
+            if (activeQueryWorker) cancelQueryExecution();
             tableSelectionMode = false;
             selectedTableNames.clear();
             if (linkingSource) clearFieldJoinSelection();
@@ -1973,15 +2034,19 @@
             appState.tableOrder = [];
             appState.tableSources = {};
             appState.xmlSources = {};
+            appState.fileName = '';
             appState.canvasTables = [];
             appState.joins = [];
-            appState.queryGridRows = [];
             activeQueryId = null;
+            activeSheetQuery = null;
+            isNewQueryDraft = true;
             activeSqlText = null;
             openTableTabs = [];
             activeWorkspaceTab = 'query-design';
             lastQueryResults = [];
             lastQueryResultColumns = [];
+            document.getElementById('currentProjectTitle').textContent = '';
+            document.getElementById('navSearchInput').value = '';
             updateQueryDesignTabLabel();
             updateSqlButtonState();
             updateActionButtonsState();
@@ -1995,9 +2060,7 @@
             document.getElementById('exportTableWorkspaceButton').disabled = true;
             closeDataPreviewModal();
             showQueryDesignTab();
-            savedQueryDefinition = getQueryDefinition();
             updateSaveButtonState();
-            updateStatusBar();
         }
 
         // Ajouter une table au schéma via modal ou bouton
@@ -2113,8 +2176,9 @@
                 fromField: source.field,
                 toTable: targetTable,
                 toField: targetField,
-                type: 'LEFT'
+                type: 'INNER'
             });
+            invalidateActiveSqlText();
             clearFieldJoinSelection();
             renderSvgJoins();
         }
@@ -2329,6 +2393,7 @@
             const join = appState.joins.find(j => j.id === appState.activeJoinId);
             if (join) {
                 join.type = selectedType;
+                invalidateActiveSqlText();
             }
             closeJoinModal();
             renderSvgJoins();
@@ -2336,6 +2401,7 @@
 
         function deleteCurrentJoin() {
             if (!appState.activeJoinId) return;
+            invalidateActiveSqlText();
             appState.joins = appState.joins.filter(j => j.id !== appState.activeJoinId);
             closeJoinModal();
             renderSvgJoins();
@@ -2349,6 +2415,7 @@
         }
 
         function addQueryColumn() {
+            invalidateActiveSqlText();
             appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', total: 'GROUP BY', show: false, sort: '', criteria: '', or: '', width: 180 });
             renderQueryGrid();
             updateSaveButtonState();
@@ -2593,10 +2660,12 @@
 
             const [movedColumn] = appState.queryGridRows.splice(sourceIndex, 1);
             appState.queryGridRows.splice(targetIndex, 0, movedColumn);
+            invalidateActiveSqlText();
             renderQueryGrid();
         }
 
         function removeQueryField(columnIndex) {
+            invalidateActiveSqlText();
             appState.queryGridRows.splice(columnIndex, 1);
             appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', total: 'GROUP BY', show: false, sort: '', criteria: '', or: '', width: 180 });
             renderQueryGrid();
@@ -2634,6 +2703,7 @@
         }
 
         function selectFieldForQuery(tableName, fieldName) {
+            invalidateActiveSqlText();
             let columnIndex = appState.queryGridRows.findIndex(queryRow => !queryRow.field);
             if (columnIndex < 0) {
                 appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', total: 'GROUP BY', show: false, sort: '', criteria: '', or: '', width: 180 });
@@ -2653,6 +2723,7 @@
         }
 
         function updateQueryGrid(e, normalizeCriteria = true) {
+            invalidateActiveSqlText();
             const row = parseInt(e.target.dataset.row);
             const col = e.target.dataset.col;
             if (col === 'show') {
@@ -2966,7 +3037,10 @@
                     ? `${validJoins.length > 1 ? `(${fromSql})` : fromSql} ${joinSql}`
                     : `(${fromSql} ${joinSql})`;
             });
-            const sqlLines = ['SELECT', selectLines.join(',\n'), `FROM ${fromSql}`];
+            const activeSavedQuery = savedQueries.find(query => query.id === activeQueryId);
+            const sourceSql = activeSqlText || (activeSheetQuery && activeSheetQuery.sql) || (activeSavedQuery && activeSavedQuery.sqlText) || '';
+            const distinct = /^\s*SELECT\s+DISTINCT\b/i.test(sourceSql);
+            const sqlLines = [distinct ? 'SELECT DISTINCT' : 'SELECT', selectLines.join(',\n'), `FROM ${fromSql}`];
 
             const criteriaGroups = appState.queryGridRows
                 .filter(row => row.field && (row.criteria.trim() || row.or.trim()))
@@ -3654,6 +3728,14 @@
         // Exécuter et afficher les résultats de la requête (Datasheet View)
         function runQueryPreview() {
             if (activeQueryWorker) return;
+            if (activeSqlText) {
+                try {
+                    parseSheetQuerySql(activeSqlText);
+                } catch (error) {
+                    showQueryExecutionError(`Cette requête SQL ne peut pas être exécutée : ${error.message}`);
+                    return;
+                }
+            }
             const requiredTableNames = [getQueryPrimaryTable()];
             appState.joins.forEach(join => {
                 requiredTableNames.push(join.fromTable, join.toTable);
@@ -3824,6 +3906,7 @@
                 if (!prepareResultLayoutChange()) return;
                 const queryRowIndex = activeColumns[columnIndex].queryRowIndex;
                 if (queryRowIndex < 0) return;
+                invalidateActiveSqlText();
                 appState.queryGridRows[queryRowIndex].alias = nextTitle;
                 renderQueryGrid();
                 updateSaveButtonState();
@@ -3837,6 +3920,7 @@
                 const sourceRowIndex = activeColumns[sourceIndex].queryRowIndex;
                 const targetRowIndex = activeColumns[targetIndex].queryRowIndex;
                 if (sourceRowIndex < 0 || targetRowIndex < 0) return;
+                invalidateActiveSqlText();
                 const [movedRow] = appState.queryGridRows.splice(sourceRowIndex, 1);
                 appState.queryGridRows.splice(targetRowIndex > sourceRowIndex ? targetRowIndex - 1 : targetRowIndex, 0, movedRow);
                 renderQueryGrid();
@@ -3978,7 +4062,6 @@
 
                 rows = rows.filter(row => {
                     let val = row[fieldKey] !== undefined ? row[fieldKey] : row[qRow.field];
-                    if (val === undefined) return false;
                     return matchesCriterion(val, criteria);
                 });
             });
