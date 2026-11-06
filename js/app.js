@@ -173,16 +173,16 @@
                 group.className = 'mb-1 border-b border-[#e1dfdd]';
                 const groupButton = document.createElement('button');
                 groupButton.type = 'button';
-                groupButton.className = 'flex w-full items-center justify-between px-2 py-1.5 text-left font-semibold text-[#323130] hover:bg-white';
-                groupButton.setAttribute('aria-expanded', 'true');
+                groupButton.className = 'flex w-full items-center justify-between border-b border-[#c8c6c4] bg-[#e1dfdd] px-2 py-1.5 text-left font-semibold text-[#323130] hover:bg-[#d6d3d1]';
+                groupButton.setAttribute('aria-expanded', 'false');
                 const groupLabel = document.createElement('span');
-                groupLabel.innerHTML = `<i class="fa-solid fa-chevron-down mr-2 text-[10px] text-gray-500"></i>${groupName}`;
+                groupLabel.innerHTML = `<i class="fa-solid fa-chevron-right mr-2 text-[10px] text-gray-500"></i>${groupName}`;
                 const groupCount = document.createElement('span');
                 groupCount.className = 'text-[10px] font-normal text-gray-500';
                 groupCount.textContent = String(queries.length);
                 groupButton.append(groupLabel, groupCount);
                 const groupList = document.createElement('div');
-                groupList.className = 'pb-1';
+                groupList.className = 'hidden pb-1';
                 groupButton.addEventListener('click', () => {
                     const expanded = groupButton.getAttribute('aria-expanded') === 'true';
                     groupButton.setAttribute('aria-expanded', String(!expanded));
