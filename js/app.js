@@ -678,18 +678,38 @@
             };
 
             const conditions = whereText ? splitSqlTopLevel(whereText, 'AND') : [];
-            conditions.forEach(condition => {
+            conditions.forEach((condition, conditionIndex) => {
                 const alternatives = splitSqlTopLevel(stripOuterSqlParentheses(condition), 'OR').map(parseCondition);
-                if (alternatives.some(item => item.table !== alternatives[0].table || item.field !== alternatives[0].field)) {
-                    throw new Error('Les conditions OR ne sont prises en charge que pour un même champ.');
-                }
-                const field = alternatives[0];
-                let row = queryRows.find(item => item.table === field.table && item.field === field.field && !item.criteria && !item.or);
-                if (!row) {
-                    row = { ...field, alias: '', expression: `${field.table}.${field.field}`, total: '', show: false, sort: '', criteria: '', or: '', width: 180 };
-                    queryRows.push(row);
-                }
-                row.criteria = alternatives.map(item => item.criterion).join(' OR ');
+                const hasDifferentFields = alternatives.some(item =>
+                    item.table !== alternatives[0].table || item.field !== alternatives[0].field
+                );
+                const orGroup = hasDifferentFields ? `where-or-${conditionIndex}` : null;
+                alternatives.forEach(field => {
+                    let row = queryRows.find(item =>
+                        item.table === field.table
+                        && item.field === field.field
+                        && (item.criteriaOrGroup || null) === orGroup
+                        && (orGroup || (!item.criteria && !item.or))
+                    );
+                    if (!row) {
+                        row = {
+                            ...field,
+                            alias: '',
+                            expression: `${field.table}.${field.field}`,
+                            total: '',
+                            show: false,
+                            sort: '',
+                            criteria: '',
+                            or: '',
+                            ...(orGroup ? { criteriaOrGroup: orGroup } : {}),
+                            width: 180
+                        };
+                        queryRows.push(row);
+                    }
+                    row.criteria = row.criteria
+                        ? `${row.criteria} OR ${field.criterion}`
+                        : field.criterion;
+                });
             });
 
             if (groupText) {
@@ -3042,9 +3062,11 @@
             const distinct = /^\s*SELECT\s+DISTINCT\b/i.test(sourceSql);
             const sqlLines = [distinct ? 'SELECT DISTINCT' : 'SELECT', selectLines.join(',\n'), `FROM ${fromSql}`];
 
-            const criteriaGroups = appState.queryGridRows
+            const criteriaGroups = [];
+            const groupedCriteria = new Map();
+            appState.queryGridRows
                 .filter(row => row.field && (row.criteria.trim() || row.or.trim()))
-                .map(row => {
+                .forEach(row => {
                     const field = queryFieldToSql(row);
                     const criteriaValues = [row.criteria, row.or]
                         .map(criteria => criteria.trim())
@@ -3055,15 +3077,33 @@
                     criteriaValues.forEach(criteria => {
                         criteria.split(/\s+(?:OR|OU)\s+/i).forEach(part => criteriaParts.push(part));
                     });
-                    return criteriaValues.length > 1 || hasAlternatives
+                    const condition = criteriaValues.length > 1 || hasAlternatives
                         ? (combinedCriteria.startsWith('NOT IN ')
                             ? `${field} ${combinedCriteria}`
                             : `(${criteriaParts
                                 .map(criteria => `${field} ${criteriaToSql(criteria)}`)
                                 .join(' OR ')})`)
                         : `${field} ${combinedCriteria}`;
+                    if (!row.criteriaOrGroup) {
+                        criteriaGroups.push(condition);
+                        return;
+                    }
+                    let group = groupedCriteria.get(row.criteriaOrGroup);
+                    if (!group) {
+                        group = [];
+                        groupedCriteria.set(row.criteriaOrGroup, group);
+                        criteriaGroups.push(group);
+                    }
+                    group.push(condition);
                 });
-            if (criteriaGroups.length > 0) sqlLines.push(`WHERE ${criteriaGroups.join('\n  AND ')}`);
+            if (criteriaGroups.length > 0) {
+                const whereConditions = criteriaGroups.map(group =>
+                    Array.isArray(group)
+                        ? (group.length > 1 ? `(${group.join(' OR ')})` : group[0])
+                        : group
+                );
+                sqlLines.push(`WHERE ${whereConditions.join('\n  AND ')}`);
+            }
 
             const groupFields = selectedFields
                 .filter(row => row.total === 'GROUP BY')
@@ -4054,17 +4094,21 @@
                 }
             });
 
-            // Appliquer les critères de la grille
-            appState.queryGridRows.forEach(qRow => {
-                if (!qRow.field || !qRow.criteria) return;
-                const fieldKey = qRow.table ? `${qRow.table}.${qRow.field}` : qRow.field;
-                const criteria = qRow.criteria.trim();
-
-                rows = rows.filter(row => {
-                    let val = row[fieldKey] !== undefined ? row[fieldKey] : row[qRow.field];
-                    return matchesCriterion(val, criteria);
-                });
+            // Appliquer les groupes de critères, avec OR dans chaque groupe SQL.
+            const criteriaGroups = new Map();
+            appState.queryGridRows.forEach((qRow, index) => {
+                if (!qRow.field || !(qRow.criteria || qRow.or)) return;
+                const groupKey = qRow.criteriaOrGroup || `and-${index}`;
+                const group = criteriaGroups.get(groupKey);
+                if (group) group.push(qRow);
+                else criteriaGroups.set(groupKey, [qRow]);
             });
+            rows = rows.filter(row => Array.from(criteriaGroups.values()).every(group => group.some(qRow => {
+                const fieldKey = qRow.table ? `${qRow.table}.${qRow.field}` : qRow.field;
+                const val = row[fieldKey] !== undefined ? row[fieldKey] : row[qRow.field];
+                const criteria = [qRow.criteria, qRow.or].filter(Boolean);
+                return criteria.some(criterion => matchesCriterion(val, criterion.trim()));
+            })));
 
             // Appliquer les tris (sort)
             appState.queryGridRows.forEach(qRow => {
