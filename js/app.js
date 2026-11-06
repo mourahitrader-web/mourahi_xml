@@ -2338,12 +2338,12 @@
         // ===== Grille de conception de requete =====
         // Initialisation de la grille de requête (Query Grid)
         function initQueryGrid() {
-            appState.queryGridRows = Array.from({ length: 8 }, () => ({ field: '', table: '', alias: '', expression: '', total: '', show: false, sort: '', criteria: '', or: '', width: 180 }));
+            appState.queryGridRows = Array.from({ length: 8 }, () => ({ field: '', table: '', alias: '', expression: '', total: 'GROUP BY', show: false, sort: '', criteria: '', or: '', width: 180 }));
             renderQueryGrid();
         }
 
         function addQueryColumn() {
-            appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', total: '', show: false, sort: '', criteria: '', or: '', width: 180 });
+            appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', total: 'GROUP BY', show: false, sort: '', criteria: '', or: '', width: 180 });
             renderQueryGrid();
             updateSaveButtonState();
             const gridScroller = document.querySelector('#queryGridPanel > .flex-1.overflow-auto');
@@ -2358,7 +2358,7 @@
             const gridRows = [
                 { label: 'Champ :', key: 'field', control: 'field' },
                 { label: 'Libellé :', key: 'alias', control: 'text', placeholder: 'Libellé' },
-                { label: 'Total :', key: 'total', control: 'total' },
+                { label: 'GroupBy :', key: 'total', control: 'total' },
                 { label: 'Tri :', key: 'sort', control: 'sort' },
                 { label: 'Afficher :', key: 'show', control: 'checkbox' },
                 { label: 'Critères :', key: 'criteria', control: 'text', placeholder: 'Ex. Like "*abc*" ou <> 0' },
@@ -2589,7 +2589,7 @@
 
         function removeQueryField(columnIndex) {
             appState.queryGridRows.splice(columnIndex, 1);
-            appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', total: '', show: false, sort: '', criteria: '', or: '', width: 180 });
+            appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', total: 'GROUP BY', show: false, sort: '', criteria: '', or: '', width: 180 });
             renderQueryGrid();
         }
 
@@ -2627,7 +2627,7 @@
         function selectFieldForQuery(tableName, fieldName) {
             let columnIndex = appState.queryGridRows.findIndex(queryRow => !queryRow.field);
             if (columnIndex < 0) {
-                appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', total: '', show: false, sort: '', criteria: '', or: '', width: 180 });
+                appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', total: 'GROUP BY', show: false, sort: '', criteria: '', or: '', width: 180 });
                 columnIndex = appState.queryGridRows.length - 1;
             }
             appState.queryGridRows[columnIndex] = {
