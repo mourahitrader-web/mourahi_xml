@@ -614,8 +614,9 @@
                 const asParts = splitSqlTopLevel(item, 'AS');
                 if (asParts.length > 2) throw new Error(`Alias de champ invalide : ${item}.`);
                 const source = asParts[0].trim();
-                const reference = readSqlReference(source);
-                if (source.slice(reference.end).trim()) throw new Error(`Expression de champ non prise en charge : ${item}.`);
+                const aggregateMatch = source.match(/^(SUM|AVG|COUNT|MIN|MAX)\s*\((.*)\)$/i);
+                const reference = readSqlReference(aggregateMatch ? aggregateMatch[2].trim() : source);
+                if (!aggregateMatch && source.slice(reference.end).trim()) throw new Error(`Expression de champ non prise en charge : ${item}.`);
                 const field = resolveReference(reference);
                 let alias = '';
                 if (asParts.length === 2) {
@@ -628,6 +629,7 @@
                     table: field.table,
                     alias,
                     expression: source,
+                    total: aggregateMatch ? aggregateMatch[1].toUpperCase() : '',
                     show: true,
                     sort: '',
                     criteria: '',
@@ -662,7 +664,7 @@
                 const field = alternatives[0];
                 let row = queryRows.find(item => item.table === field.table && item.field === field.field && !item.criteria && !item.or);
                 if (!row) {
-                    row = { ...field, alias: '', expression: `${field.table}.${field.field}`, show: false, sort: '', criteria: '', or: '', width: 180 };
+                    row = { ...field, alias: '', expression: `${field.table}.${field.field}`, total: '', show: false, sort: '', criteria: '', or: '', width: 180 };
                     queryRows.push(row);
                 }
                 row.criteria = alternatives.map(item => item.criterion).join(' OR ');
@@ -685,7 +687,7 @@
                 });
             }
 
-            while (queryRows.length < 8) queryRows.push({ field: '', table: '', alias: '', expression: '', show: false, sort: '', criteria: '', or: '', width: 180 });
+            while (queryRows.length < 8) queryRows.push({ field: '', table: '', alias: '', expression: '', total: '', show: false, sort: '', criteria: '', or: '', width: 180 });
             const canvasTables = tables.map((name, index) => ({
                 name,
                 x: 40 + index * 260,
@@ -1941,7 +1943,7 @@
             appState.joins = appState.joins.filter(join => !namesToDelete.has(join.fromTable) && !namesToDelete.has(join.toTable));
             appState.queryGridRows = appState.queryGridRows.map(queryRow => {
                 if (!queryRow.table || !lowerCaseNames.has(queryRow.table.toLowerCase())) return queryRow;
-                return { field: '', table: '', alias: '', expression: '', show: false, sort: '', criteria: '', or: '', width: queryRow.width };
+                return { field: '', table: '', alias: '', expression: '', total: '', show: false, sort: '', criteria: '', or: '', width: queryRow.width };
             });
             selectedTableNames = new Set([...selectedTableNames].filter(name => !namesToDelete.has(name)));
 
@@ -2336,12 +2338,12 @@
         // ===== Grille de conception de requete =====
         // Initialisation de la grille de requête (Query Grid)
         function initQueryGrid() {
-            appState.queryGridRows = Array.from({ length: 8 }, () => ({ field: '', table: '', alias: '', expression: '', show: false, sort: '', criteria: '', or: '', width: 180 }));
+            appState.queryGridRows = Array.from({ length: 8 }, () => ({ field: '', table: '', alias: '', expression: '', total: '', show: false, sort: '', criteria: '', or: '', width: 180 }));
             renderQueryGrid();
         }
 
         function addQueryColumn() {
-            appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', show: false, sort: '', criteria: '', or: '', width: 180 });
+            appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', total: '', show: false, sort: '', criteria: '', or: '', width: 180 });
             renderQueryGrid();
             updateSaveButtonState();
             const gridScroller = document.querySelector('#queryGridPanel > .flex-1.overflow-auto');
@@ -2356,6 +2358,7 @@
             const gridRows = [
                 { label: 'Champ :', key: 'field', control: 'field' },
                 { label: 'Libellé :', key: 'alias', control: 'text', placeholder: 'Libellé' },
+                { label: 'Total :', key: 'total', control: 'total' },
                 { label: 'Tri :', key: 'sort', control: 'sort' },
                 { label: 'Afficher :', key: 'show', control: 'checkbox' },
                 { label: 'Critères :', key: 'criteria', control: 'text', placeholder: 'Ex. Like "*abc*" ou <> 0' },
@@ -2380,7 +2383,29 @@
                     td.addEventListener('dragover', allowQueryColumnDrop);
                     td.addEventListener('drop', event => dropQueryColumn(event, columnIndex));
 
-                    if (gridRow.control === 'sort') {
+                    if (gridRow.control === 'total') {
+                        const select = document.createElement('select');
+                        select.className = 'w-full bg-transparent px-1 focus:bg-white focus:outline-none text-xs';
+                        select.dataset.row = columnIndex;
+                        select.dataset.col = 'total';
+                        select.onchange = updateQueryGrid;
+                        [
+                            ['', '(Aucun)'],
+                            ['GROUP BY', 'Regrouper par'],
+                            ['SUM', 'Somme'],
+                            ['AVG', 'Moyenne'],
+                            ['COUNT', 'Compte'],
+                            ['MIN', 'Min'],
+                            ['MAX', 'Max']
+                        ].forEach(([value, text]) => {
+                            const option = document.createElement('option');
+                            option.value = value;
+                            option.textContent = text;
+                            select.appendChild(option);
+                        });
+                        select.value = queryRow.total || '';
+                        td.appendChild(select);
+                    } else if (gridRow.control === 'sort') {
                         const select = document.createElement('select');
                         select.className = 'w-full bg-transparent px-1 focus:bg-white focus:outline-none text-xs';
                         select.dataset.row = columnIndex;
@@ -2564,7 +2589,7 @@
 
         function removeQueryField(columnIndex) {
             appState.queryGridRows.splice(columnIndex, 1);
-            appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', show: false, sort: '', criteria: '', or: '', width: 180 });
+            appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', total: '', show: false, sort: '', criteria: '', or: '', width: 180 });
             renderQueryGrid();
         }
 
@@ -2602,7 +2627,7 @@
         function selectFieldForQuery(tableName, fieldName) {
             let columnIndex = appState.queryGridRows.findIndex(queryRow => !queryRow.field);
             if (columnIndex < 0) {
-                appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', show: false, sort: '', criteria: '', or: '', width: 180 });
+                appState.queryGridRows.push({ field: '', table: '', alias: '', expression: '', total: '', show: false, sort: '', criteria: '', or: '', width: 180 });
                 columnIndex = appState.queryGridRows.length - 1;
             }
             appState.queryGridRows[columnIndex] = {
@@ -2913,7 +2938,10 @@
             const selectLines = selectedFields.length > 0
                 ? selectedFields.map(row => {
                     const alias = row.alias ? ` AS ${quoteSqlIdentifier(row.alias)}` : '';
-                    return `    ${queryFieldToSql(row)}${alias}`;
+                    const aggregate = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'].includes(row.total)
+                        ? `${row.total}(${queryFieldToSql(row)})`
+                        : queryFieldToSql(row);
+                    return `    ${aggregate}${alias}`;
                 })
                 : ['    *'];
             const validJoins = appState.joins.filter(join =>
@@ -2951,6 +2979,22 @@
                         : `${field} ${combinedCriteria}`;
                 });
             if (criteriaGroups.length > 0) sqlLines.push(`WHERE ${criteriaGroups.join('\n  AND ')}`);
+
+            const groupFields = selectedFields
+                .filter(row => row.total === 'GROUP BY')
+                .map(row => queryFieldToSql(row));
+            if (groupFields.length > 0) sqlLines.push(`GROUP BY ${groupFields.join(', ')}`);
+
+            const havingGroups = appState.queryGridRows
+                .filter(row => row.field && ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'].includes(row.total) && (row.criteria.trim() || row.or.trim()))
+                .map(row => {
+                    const field = `${row.total}(${queryFieldToSql(row)})`;
+                    const values = [row.criteria, row.or].map(criteria => criteria.trim()).filter(Boolean);
+                    return values.length > 1
+                        ? `(${values.map(criteria => `${field} ${criteriaToSql(criteria)}`).join(' OR ')})`
+                        : `${field} ${criteriaToSql(values[0])}`;
+                });
+            if (havingGroups.length > 0) sqlLines.push(`HAVING ${havingGroups.join('\n  AND ')}`);
 
             const sortFields = appState.queryGridRows.filter(row => row.field && row.sort);
             if (sortFields.length > 0) {
@@ -3940,6 +3984,40 @@
                     return 0;
                 });
             });
+
+            const groupedQueryRows = appState.queryGridRows.filter(qRow => qRow.field && qRow.total);
+            if (groupedQueryRows.length > 0) {
+                const groupRows = groupedQueryRows.filter(qRow => qRow.total === 'GROUP BY');
+                const aggregateRows = groupedQueryRows.filter(qRow => ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'].includes(qRow.total));
+                const buckets = new Map();
+                rows.forEach(row => {
+                    const key = JSON.stringify(groupRows.map(qRow => {
+                        const fieldKey = qRow.table ? `${qRow.table}.${qRow.field}` : qRow.field;
+                        return row[fieldKey] !== undefined ? row[fieldKey] : row[qRow.field];
+                    }));
+                    if (!buckets.has(key)) buckets.set(key, []);
+                    buckets.get(key).push(row);
+                });
+                rows = Array.from(buckets.values()).map(bucket => {
+                    const result = { ...bucket[0] };
+                    aggregateRows.forEach(qRow => {
+                        const fieldKey = qRow.table ? `${qRow.table}.${qRow.field}` : qRow.field;
+                        const values = bucket.map(row => row[fieldKey] !== undefined ? row[fieldKey] : row[qRow.field])
+                            .filter(value => value !== null && value !== undefined && value !== '');
+                        let aggregateValue = '';
+                        if (qRow.total === 'COUNT') aggregateValue = values.length;
+                        else if (values.length > 0) {
+                            const numericValues = values.map(Number).filter(value => !Number.isNaN(value));
+                            if (qRow.total === 'SUM') aggregateValue = numericValues.reduce((sum, value) => sum + value, 0);
+                            if (qRow.total === 'AVG') aggregateValue = numericValues.length > 0 ? numericValues.reduce((sum, value) => sum + value, 0) / numericValues.length : '';
+                            if (qRow.total === 'MIN') aggregateValue = values.reduce((min, value) => value < min ? value : min);
+                            if (qRow.total === 'MAX') aggregateValue = values.reduce((max, value) => value > max ? value : max);
+                        }
+                        result[fieldKey] = aggregateValue;
+                    });
+                    return result;
+                });
+            }
 
             let groupingColumns = appState.queryGridRows
                 .filter(qRow => qRow.show && qRow.field)
