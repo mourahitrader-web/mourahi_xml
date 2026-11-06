@@ -4,12 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BigSi_XML</title>
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- SheetJS (xlsx) pour l'export Excel multi-onglets -->
-    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <!-- FontAwesome pour les icônes style Access/Office -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Dépendances locales : l'application fonctionne hors connexion après son premier chargement. -->
+    <script src="vendor/tailwind/tailwindcss.js"></script>
+    <script src="vendor/xlsx/xlsx.full.min.js"></script>
+    <link rel="stylesheet" href="vendor/fontawesome/all.min.css">
     <link rel="stylesheet" href="css/styles.css">
 </head>
 
@@ -386,5 +384,14 @@
     </div>
 
     <script src="js/app.js"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', function () {
+                navigator.serviceWorker.register('./service-worker.js').catch(function (error) {
+                    console.error('Service worker hors connexion indisponible :', error);
+                });
+            });
+        }
+    </script>
 </body>
 </html>
