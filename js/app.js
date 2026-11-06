@@ -623,20 +623,163 @@
                 }
                 return { table: tableName, field: reference.field };
             };
+            const parseCalculatedExpression = expression => {
+                const tokens = [];
+                let index = 0;
+                while (index < expression.length) {
+                    if (/\s/.test(expression[index])) {
+                        index++;
+                        continue;
+                    }
+                    if (expression[index] === '[') {
+                        const identifier = readSqlIdentifier(expression, index);
+                        tokens.push({ type: 'identifier', value: identifier.value });
+                        index = identifier.end;
+                        continue;
+                    }
+                    if (expression[index] === '"' || expression[index] === "'") {
+                        const quote = expression[index];
+                        let value = '';
+                        index++;
+                        let closed = false;
+                        while (index < expression.length) {
+                            if (expression[index] === quote && expression[index + 1] === quote) {
+                                value += quote;
+                                index += 2;
+                            } else if (expression[index] === quote) {
+                                index++;
+                                closed = true;
+                                break;
+                            } else {
+                                value += expression[index++];
+                            }
+                        }
+                        if (!closed) throw new Error('Une chaîne du champ calculé n’est pas terminée.');
+                        tokens.push({ type: 'literal', value });
+                        continue;
+                    }
+                    const number = expression.slice(index).match(/^\d+(?:\.\d+)?/);
+                    if (number) {
+                        tokens.push({ type: 'literal', value: Number(number[0]) });
+                        index += number[0].length;
+                        continue;
+                    }
+                    const identifier = expression.slice(index).match(/^[A-Za-z_][\w$]*/);
+                    if (identifier) {
+                        const keyword = identifier[0].toUpperCase();
+                        tokens.push(keyword === 'TRUE' || keyword === 'FALSE'
+                            ? { type: 'literal', value: keyword === 'TRUE' }
+                            : { type: 'identifier', value: identifier[0] });
+                        index += identifier[0].length;
+                        continue;
+                    }
+                    const operator = expression.slice(index).match(/^(?:<>|!=|<=|>=|[=<>])/);
+                    if (operator) {
+                        tokens.push({ type: 'operator', value: operator[0] });
+                        index += operator[0].length;
+                        continue;
+                    }
+                    if ('().,'.includes(expression[index])) {
+                        tokens.push({ type: expression[index], value: expression[index] });
+                        index++;
+                        continue;
+                    }
+                    throw new Error(`Expression de champ calculé non prise en charge près de « ${expression.slice(index, index + 20)} ».`);
+                }
+
+                let position = 0;
+                const peek = value => tokens[position] && tokens[position].value.toUpperCase() === value;
+                const expect = value => {
+                    if (!tokens[position] || tokens[position].value !== value) {
+                        throw new Error(`Expression de champ calculé invalide : « ${value} » attendu.`);
+                    }
+                    position++;
+                };
+                const parseValue = () => {
+                    const token = tokens[position];
+                    if (!token) throw new Error('Valeur attendue dans le champ calculé.');
+                    if (token.type === 'literal') {
+                        position++;
+                        return { type: 'literal', value: token.value };
+                    }
+                    if (token.type !== 'identifier') throw new Error('Champ ou valeur attendu dans le champ calculé.');
+                    if (peek('IIF')) return parseExpression();
+                    const first = token.value;
+                    position++;
+                    let reference = { table: '', field: first };
+                    if (tokens[position] && tokens[position].type === '.') {
+                        position++;
+                        const second = tokens[position++];
+                        if (!second || second.type !== 'identifier') throw new Error('Nom de champ attendu après le point.');
+                        reference = { table: first, field: second.value };
+                    }
+                    const field = resolveReference(reference);
+                    return { type: 'field', ...field };
+                };
+                const parseComparison = () => {
+                    const left = parseValue();
+                    const token = tokens[position];
+                    if (!token || token.type !== 'operator') {
+                        throw new Error('Les conditions du champ calculé doivent comparer un champ et une valeur.');
+                    }
+                    position++;
+                    return { type: 'compare', operator: token.value === '!=' ? '<>' : token.value, left, right: parseValue() };
+                };
+                const parseCondition = () => {
+                    let condition = parseComparison();
+                    while (peek('OR')) {
+                        position++;
+                        condition = { type: 'or', left: condition, right: parseComparison() };
+                    }
+                    return condition;
+                };
+                const parseExpression = () => {
+                    if (!peek('IIF')) return parseValue();
+                    position++;
+                    expect('(');
+                    const condition = parseCondition();
+                    expect(',');
+                    const consequent = parseExpression();
+                    expect(',');
+                    const alternate = parseExpression();
+                    expect(')');
+                    return { type: 'iif', condition, consequent, alternate };
+                };
+
+                const result = parseExpression();
+                if (position !== tokens.length) throw new Error('Expression de champ calculé invalide ou non prise en charge.');
+                return result;
+            };
             const parseProjection = item => {
                 const asParts = splitSqlTopLevel(item, 'AS');
                 if (asParts.length > 2) throw new Error(`Alias de champ invalide : ${item}.`);
                 const source = asParts[0].trim();
                 const aggregateMatch = source.match(/^(SUM|AVG|COUNT|MIN|MAX)\s*\((.*)\)$/i);
-                const reference = readSqlReference(aggregateMatch ? aggregateMatch[2].trim() : source);
-                if (!aggregateMatch && source.slice(reference.end).trim()) throw new Error(`Expression de champ non prise en charge : ${item}.`);
-                const field = resolveReference(reference);
                 let alias = '';
                 if (asParts.length === 2) {
                     const aliasRef = readSqlIdentifier(asParts[1]);
                     if (asParts[1].slice(aliasRef.end).trim()) throw new Error(`Alias invalide : ${asParts[1]}.`);
                     alias = aliasRef.value;
                 }
+                if (!aggregateMatch && /^IIF\s*\(/i.test(source)) {
+                    if (!alias) throw new Error(`Le champ calculé doit avoir un alias avec AS : ${item}.`);
+                    return {
+                        field: alias,
+                        table: '',
+                        alias,
+                        expression: source,
+                        calculatedExpression: parseCalculatedExpression(source),
+                        total: '',
+                        show: true,
+                        sort: '',
+                        criteria: '',
+                        or: '',
+                        width: 180
+                    };
+                }
+                const reference = readSqlReference(aggregateMatch ? aggregateMatch[2].trim() : source);
+                if (!aggregateMatch && source.slice(reference.end).trim()) throw new Error(`Expression de champ non prise en charge : ${item}.`);
+                const field = resolveReference(reference);
                 return {
                     field: field.field,
                     table: field.table,
@@ -714,6 +857,14 @@
 
             if (groupText) {
                 splitSqlTopLevel(groupText, ',').forEach(groupField => {
+                    const calculatedRow = queryRows.find(item =>
+                        item.calculatedExpression && item.expression.replace(/\s+/g, ' ').trim().toLowerCase()
+                            === groupField.replace(/\s+/g, ' ').trim().toLowerCase()
+                    );
+                    if (calculatedRow) {
+                        calculatedRow.total = 'GROUP BY';
+                        return;
+                    }
                     const reference = readSqlReference(groupField);
                     if (groupField.slice(reference.end).trim()) {
                         throw new Error(`Expression GROUP BY non prise en charge : ${groupField}.`);
@@ -2553,9 +2704,17 @@
                                 input.appendChild(group);
                             });
 
-                            const selectedValue = queryRow.table && queryRow.field
+                            const selectedValue = queryRow.calculatedExpression
+                                ? `__calculated__:${queryRow.field}`
+                                : queryRow.table && queryRow.field
                                 ? `${queryRow.table}.${queryRow.field}`
                                 : '';
+                            if (queryRow.calculatedExpression) {
+                                const customOption = document.createElement('option');
+                                customOption.value = selectedValue;
+                                customOption.textContent = queryRow.expression;
+                                input.appendChild(customOption);
+                            }
                             if (selectedValue && !Array.from(input.options).some(option => option.value === selectedValue)) {
                                 const customOption = document.createElement('option');
                                 customOption.value = selectedValue;
@@ -2746,12 +2905,14 @@
             invalidateActiveSqlText();
             const row = parseInt(e.target.dataset.row);
             const col = e.target.dataset.col;
+            if (col === 'field' && String(e.target.value).startsWith('__calculated__:')) return;
             if (col === 'show') {
                 appState.queryGridRows[row][col] = e.target.checked;
             } else {
                 appState.queryGridRows[row][col] = e.target.value;
                 if (col === 'field') {
                     const queryRow = appState.queryGridRows[row];
+                    delete queryRow.calculatedExpression;
                     if (!queryRow.total) queryRow.total = 'GROUP BY';
                     const parsedExpression = parseQueryFieldExpression(e.target.value, queryRow.table, queryRow.field);
                     queryRow.expression = e.target.value;
@@ -2795,6 +2956,7 @@
         }
 
         function queryFieldToSql(queryRow) {
+            if (queryRow.calculatedExpression) return queryRow.expression;
             return queryRow.table
                 ? `${quoteSqlIdentifier(queryRow.table)}.${quoteSqlIdentifier(queryRow.field)}`
                 : quoteSqlIdentifier(queryRow.field);
@@ -2921,6 +3083,39 @@
                 case '<=': return left <= right;
                 default: return normalizedActual.toLowerCase().includes(normalizedExpected.toLowerCase());
             }
+        }
+
+        function evaluateCalculatedExpression(expression, row) {
+            const evaluate = node => {
+                if (node.type === 'literal') return node.value;
+                if (node.type === 'field') {
+                    const key = node.table ? `${node.table}.${node.field}` : node.field;
+                    return row[key] !== undefined ? row[key] : row[node.field];
+                }
+                if (node.type === 'or') return Boolean(evaluate(node.left)) || Boolean(evaluate(node.right));
+                if (node.type === 'iif') return evaluate(node.condition) ? evaluate(node.consequent) : evaluate(node.alternate);
+                if (node.type === 'compare') {
+                    const leftValue = evaluate(node.left);
+                    const rightValue = evaluate(node.right);
+                    const numericLeft = Number(leftValue);
+                    const numericRight = Number(rightValue);
+                    const numeric = leftValue !== '' && rightValue !== ''
+                        && !Number.isNaN(numericLeft) && !Number.isNaN(numericRight);
+                    const left = numeric ? numericLeft : String(leftValue ?? '').toLowerCase();
+                    const right = numeric ? numericRight : String(rightValue ?? '').toLowerCase();
+                    switch (node.operator) {
+                        case '=': return left === right;
+                        case '<>': return left !== right;
+                        case '>': return left > right;
+                        case '<': return left < right;
+                        case '>=': return left >= right;
+                        case '<=': return left <= right;
+                        default: throw new Error(`Opérateur de champ calculé non pris en charge : ${node.operator}.`);
+                    }
+                }
+                throw new Error('Expression de champ calculé invalide.');
+            };
+            return evaluate(expression);
         }
 
         function splitSqlList(value) {
@@ -3807,6 +4002,7 @@
                     const criteriaValueForSql = ${criteriaValueForSql.toString()};
                     const normalizeMultipleExclusions = ${normalizeMultipleExclusions.toString()};
                     const matchesCriterion = ${matchesCriterion.toString()};
+                    const evaluateCalculatedExpression = ${evaluateCalculatedExpression.toString()};
                     const executeQueryEngine = ${executeQueryEngine.toString()};
                     self.onmessage = event => {
                         if (event.data.type !== 'execute') return;
@@ -4092,6 +4288,13 @@
                 if (rows.length > QUERY_MAX_INTERMEDIATE_ROWS) {
                     throw new Error(`Trop de lignes intermédiaires (${rows.length.toLocaleString()}).`);
                 }
+            });
+
+            appState.queryGridRows.forEach(queryRow => {
+                if (!queryRow.field || !queryRow.calculatedExpression) return;
+                rows.forEach(row => {
+                    row[queryRow.field] = evaluateCalculatedExpression(queryRow.calculatedExpression, row);
+                });
             });
 
             // Appliquer les groupes de critères, avec OR dans chaque groupe SQL.
