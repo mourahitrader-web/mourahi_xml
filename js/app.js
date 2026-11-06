@@ -3271,7 +3271,7 @@
                 const resizeHandle = document.createElement('span');
                 resizeHandle.className = 'h-5 w-1 shrink-0 cursor-col-resize hover:bg-red-400';
                 resizeHandle.title = 'Redimensionner la colonne';
-                resizeHandle.addEventListener('pointerdown', event => {
+                addPointerEventListener(resizeHandle, 'pointerdown', event => {
                     event.preventDefault();
                     event.stopPropagation();
                     resizeStartX = event.clientX;
@@ -3282,12 +3282,12 @@
                         table.querySelectorAll('.grid').forEach(grid => { grid.style.gridTemplateColumns = getColumnTemplate(); });
                     };
                     const stopResize = () => {
-                        document.removeEventListener('pointermove', resize);
-                        document.removeEventListener('pointerup', stopResize);
+                        removePointerEventListener(document, 'pointermove', resize);
+                        removePointerEventListener(document, 'pointerup', stopResize);
                         if (onColumnResize) onColumnResize();
                     };
-                    document.addEventListener('pointermove', resize);
-                    document.addEventListener('pointerup', stopResize);
+                    addPointerEventListener(document, 'pointermove', resize);
+                    addPointerEventListener(document, 'pointerup', stopResize);
                 });
                 const menuButton = document.createElement('button');
                 menuButton.type = 'button';
@@ -3479,11 +3479,11 @@
                     };
                     closeColumnMenu = () => {
                         menu.remove();
-                        document.removeEventListener('pointerdown', handleOutsideClick);
+                        removePointerEventListener(document, 'pointerdown', handleOutsideClick);
                         document.removeEventListener('keydown', handleEscape);
                         closeColumnMenu = () => {};
                     };
-                    document.addEventListener('pointerdown', handleOutsideClick);
+                    addPointerEventListener(document, 'pointerdown', handleOutsideClick);
                     document.addEventListener('keydown', handleEscape);
                     if (columnFilters[columnIndex].textFilter) {
                         textOperator.value = columnFilters[columnIndex].textFilter.operator;
