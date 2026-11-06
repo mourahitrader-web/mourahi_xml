@@ -2620,6 +2620,10 @@
             if (alternatives.length > 1) {
                 return alternatives.some(part => matchesCriterion(value, part));
             }
+            const conditions = normalized.split(/\s+AND\s+/i);
+            if (conditions.length > 1) {
+                return conditions.every(part => matchesCriterion(value, part));
+            }
 
             const stringValue = value === null || value === undefined ? '' : String(value).trim();
             const lowerValue = stringValue.toLowerCase();
@@ -2666,7 +2670,7 @@
 
         function compareValues(actual, operator, expected) {
             const normalizedActual = actual.trim();
-            const normalizedExpected = expected.trim();
+            const normalizedExpected = expected.trim().replace(/^['"]|['"]$/g, '');
             const numericActual = Number(normalizedActual);
             const numericExpected = Number(normalizedExpected);
             const isNumeric = !Number.isNaN(numericActual) && !Number.isNaN(numericExpected);
