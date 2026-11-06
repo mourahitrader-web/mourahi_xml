@@ -1,4 +1,5 @@
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; user-select: none; -webkit-user-select: none; -moz-user-select: none; }
+        .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
         .access-ribbon { background: #f3f3f3; border-bottom: 1px solid #d4d4d4; }
         .access-tab { padding: 6px 16px; font-size: 13px; font-weight: 500; color: #333; cursor: pointer; border-bottom: 2px solid transparent; }
         .access-tab.active { color: #b91c1c; border-bottom-color: #b91c1c; background: #fff; }

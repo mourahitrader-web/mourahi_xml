@@ -73,6 +73,11 @@
             if (selectAllCheckbox) {
                 selectAllCheckbox.addEventListener('change', toggleSelectAllTables);
             }
+            const addXmlButton = document.getElementById('addXmlButton');
+            const xmlFileInput = document.getElementById('xmlFileInput');
+            if (addXmlButton && xmlFileInput) {
+                addXmlButton.addEventListener('click', () => xmlFileInput.click());
+            }
             document.addEventListener('click', event => {
                 if (!event.target.closest('#savedQueryContextMenu')) closeSavedQueryContextMenu();
             });
