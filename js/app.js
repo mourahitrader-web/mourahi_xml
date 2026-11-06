@@ -209,19 +209,7 @@
                         event.stopPropagation();
                         openSavedQueryContextMenu(index, 'shared', event.clientX, event.clientY);
                     });
-                    nameButton.addEventListener('dblclick', event => {
-                        event.stopPropagation();
-                        loadSheetQuery(index);
-                        showQueryDesignTab();
-                    });
-
-                    const loadButton = document.createElement('button');
-                    loadButton.type = 'button';
-                    loadButton.className = 'shrink-0 rounded px-1.5 py-0.5 text-[11px] text-blue-700 hover:bg-blue-50';
-                    loadButton.textContent = 'Charger';
-                    loadButton.title = `Charger ${query.name}`;
-                    loadButton.addEventListener('click', () => loadSheetQuery(index));
-                    row.append(nameButton, loadButton);
+                    row.appendChild(nameButton);
                     groupList.appendChild(row);
                 });
                 group.append(groupButton, groupList);
