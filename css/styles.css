@@ -1,0 +1,24 @@
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; user-select: none; -webkit-user-select: none; -moz-user-select: none; }
+        .access-ribbon { background: #f3f3f3; border-bottom: 1px solid #d4d4d4; }
+        .access-tab { padding: 6px 16px; font-size: 13px; font-weight: 500; color: #333; cursor: pointer; border-bottom: 2px solid transparent; }
+        .access-tab.active { color: #b91c1c; border-bottom-color: #b91c1c; background: #fff; }
+        .access-grid-header { background: #e1dfdd; border-right: 1px solid #c8c6c4; border-bottom: 1px solid #c8c6c4; font-size: 11px; font-weight: 600; color: #323130; }
+        .access-grid-cell { border-right: 1px solid #edebe9; border-bottom: 1px solid #edebe9; font-size: 12px; }
+        .table-card { position: absolute; background: #ffffff; border: 1px solid #8a8886; box-shadow: 0 4px 12px rgba(0,0,0,0.15); border-radius: 3px; width: 220px; z-index: 10; cursor: move; }
+        .table-card header { background: linear-gradient(to bottom, #f3f2f1, #e1dfdd); border-bottom: 1px solid #c8c6c4; padding: 4px 8px; font-size: 11px; font-weight: bold; color: #201f1e; }
+        .field-row { padding: 2px 8px; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; -webkit-user-select: none; user-select: none; }
+        .field-row:hover { background: #f3f9ff; color: #005a9e; }
+        .field-row.selected { background: #c7e0f4; }
+        .field-row.query-field-selected { background: #dbeafe; border-left: 3px solid #2563eb; padding-left: 5px; font-weight: 600; }
+        .field-row.join-source { background: #e6f4ea; border-left: 3px solid #16a34a; padding-left: 5px; }
+        .resize-handle { position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; cursor: se-resize; }
+        /* Style des lignes SVG */
+        .join-line { stroke: #434343; stroke-width: 2; cursor: pointer; transition: stroke 0.2s; }
+        .join-line:hover { stroke: #005a9e; stroke-width: 3; }
+        .join-arrow { fill: #434343; }
+        .table-fields-scroll, #erdCanvas, .overflow-auto { -webkit-overflow-scrolling: touch; }
+        .xml-loading-indeterminate { width: 35%; animation: xml-loading-sweep 1.3s ease-in-out infinite; }
+        @keyframes xml-loading-sweep {
+            from { transform: translateX(-110%); }
+            to { transform: translateX(300%); }
+        }
