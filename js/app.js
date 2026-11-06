@@ -1104,12 +1104,18 @@
                 savedQueries = previousQueries;
                 return;
             }
-            if (activeQueryId === queryId) activeQueryId = null;
+            const wasActiveQuery = activeQueryId === queryId;
+            if (wasActiveQuery) {
+                localStorage.removeItem(QUERY_DRAFT_KEY);
+                resetToNewQuery();
+            }
             updateQueryDesignTabLabel();
             updateSqlButtonState();
             updateSaveButtonState();
             renderSavedQueries();
-            document.getElementById('statusBarMode').textContent = `Requête « ${query.name} » supprimée`;
+            if (!wasActiveQuery) {
+                document.getElementById('statusBarMode').textContent = `Requête « ${query.name} » supprimée`;
+            }
         }
 
         function restoreQueryDraft() {
