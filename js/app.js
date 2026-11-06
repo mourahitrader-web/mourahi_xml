@@ -2804,14 +2804,23 @@
             }
 
             const comparison = value.match(/^(<=|>=|<>|=|<|>)\s*(.*)$/i);
-            if (comparison) return `${comparison[1]} ${comparison[2]}`;
+            if (comparison) {
+                const operand = comparison[2].trim();
+                const quotedOperand = operand.match(/^(['"])([\s\S]*)\1$/);
+                if (quotedOperand) {
+                    return `${comparison[1]} "${quotedOperand[2].replace(/"/g, '""')}"`;
+                }
+                return `${comparison[1]} ${operand}`;
+            }
             if (/^IS\s+NOT\s+NULL$/i.test(value) || /^IS\s+NULL$/i.test(value)) return value.toUpperCase();
-            if (/^(['"])\1$/.test(value)) return '= \'\'';
+            if (/^(['"])\1$/.test(value)) return '= ""';
             if (/^NOT\s+LIKE\s+/i.test(value)) {
-                return `NOT LIKE ${criteriaValueForSql(accessLikePattern(value.replace(/^NOT\s+LIKE\s+/i, '').trim()))}`;
+                const pattern = value.replace(/^NOT\s+LIKE\s+/i, '').trim().replace(/^['"]|['"]$/g, '');
+                return `NOT LIKE "${accessLikePattern(pattern).replace(/"/g, '""')}"`;
             }
             if (/^LIKE\s+/i.test(value)) {
-                return `LIKE ${criteriaValueForSql(accessLikePattern(value.replace(/^LIKE\s+/i, '').trim()))}`;
+                const pattern = value.replace(/^LIKE\s+/i, '').trim().replace(/^['"]|['"]$/g, '');
+                return `LIKE "${accessLikePattern(pattern).replace(/"/g, '""')}"`;
             }
             if (/^NOT\s*=\s*/i.test(value)) return `<> ${value.replace(/^NOT\s*=\s*/, '')}`;
             if (/^NOT\s+/i.test(value)) {
@@ -2819,7 +2828,7 @@
                 return `NOT LIKE ${criteriaValueForSql(`*${operand}*`)}`;
             }
             if (/^(IS\b|IN\b)/i.test(value)) return value;
-            return `LIKE ${criteriaValueForSql(`*${value}*`)}`;
+            return `LIKE "*${value.replace(/"/g, '""')}*"`;
         }
 
         function criteriaValueForSql(criteria) {
