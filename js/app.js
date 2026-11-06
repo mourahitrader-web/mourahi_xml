@@ -624,15 +624,16 @@
                 const condition = stripOuterSqlParentheses(conditionText);
                 const reference = readSqlReference(condition);
                 const rest = condition.slice(reference.end).trim();
-                const operatorMatch = rest.match(/^(NOT\s+LIKE|LIKE|>=|<=|<>|=|>|<)\s*(.+)$/i);
+                const operatorMatch = rest.match(/^(IS\s+NOT\s+NULL|IS\s+NULL|NOT\s+LIKE|NOT\s+IN|LIKE|IN|>=|<=|<>|=|>|<)\s*(.*)$/i);
                 if (!operatorMatch) throw new Error(`Critère SQL non pris en charge : ${condition}.`);
                 const field = resolveReference(reference);
                 const operator = operatorMatch[1].replace(/\s+/g, ' ').toUpperCase();
                 let operand = operatorMatch[2].trim();
                 if ((operand.startsWith('"') && operand.endsWith('"')) || (operand.startsWith("'") && operand.endsWith("'"))) {
-                    if (operator !== 'LIKE' && operator !== 'NOT LIKE') operand = operand.slice(1, -1);
+                    if (!['LIKE', 'NOT LIKE', 'IN', 'NOT IN'].includes(operator)) operand = operand.slice(1, -1);
                 }
-                if (operator === 'LIKE' || operator === 'NOT LIKE') operand = `${operator} ${operatorMatch[2].trim()}`;
+                if (operator === 'IS NULL' || operator === 'IS NOT NULL') operand = operator;
+                else if (operator === 'LIKE' || operator === 'NOT LIKE') operand = `${operator} ${operatorMatch[2].trim()}`;
                 else operand = `${operator} ${operand}`;
                 return { ...field, criterion: operand };
             };
@@ -2292,7 +2293,7 @@
                 { label: 'Libellé :', key: 'alias', control: 'text', placeholder: 'Libellé' },
                 { label: 'Tri :', key: 'sort', control: 'sort' },
                 { label: 'Afficher :', key: 'show', control: 'checkbox' },
-                { label: 'Critères :', key: 'criteria', control: 'text', placeholder: 'Critère' },
+                { label: 'Critères :', key: 'criteria', control: 'text', placeholder: 'Ex. IS NULL' },
                 { label: 'Ou :', key: 'or', control: 'text', placeholder: 'Ou' }
             ];
 
@@ -2382,7 +2383,9 @@
                             input.value = queryRow[gridRow.key];
                         }
                         input.onchange = updateQueryGrid;
-                        if (gridRow.control !== 'field') input.oninput = updateQueryGrid;
+                        if (gridRow.control !== 'field') {
+                            input.oninput = event => updateQueryGrid(event, false);
+                        }
 
                         if (gridRow.key === 'field') {
                             const controls = document.createElement('div');
@@ -2551,7 +2554,7 @@
             if (gridScroller) gridScroller.scrollLeft = gridScroller.scrollWidth;
         }
 
-        function updateQueryGrid(e) {
+        function updateQueryGrid(e, normalizeCriteria = true) {
             const row = parseInt(e.target.dataset.row);
             const col = e.target.dataset.col;
             if (col === 'show') {
@@ -2575,6 +2578,11 @@
                     if (showCheckbox) showCheckbox.checked = hasField;
                     const removeButton = document.querySelector(`#queryGridBody [data-row="${row}"][aria-label="Retirer ce champ"]`);
                     if (removeButton) removeButton.style.display = hasField ? 'inline-flex' : 'none';
+                }
+                if (normalizeCriteria && (col === 'criteria' || col === 'or')) {
+                    const normalizedCriteria = normalizeMultipleExclusions(e.target.value);
+                    appState.queryGridRows[row][col] = normalizedCriteria;
+                    e.target.value = normalizedCriteria;
                 }
             }
             if (col === 'field' || col === 'alias') syncQueryFieldHighlights();
@@ -2611,11 +2619,30 @@
             return new RegExp(`^${sanitized}$`, 'i');
         }
 
+        function normalizeMultipleExclusions(criteria) {
+            const value = String(criteria ?? '').trim();
+            if (!value) return value;
+
+            let values = null;
+            if (/^(?:NOT|NI)\b/i.test(value)) {
+                values = value
+                    .replace(/^(?:NOT|NI)\s+/i, '')
+                    .split(/\s+(?:AND\s+)?(?:NOT|NI)\s+/i);
+            } else if (/^(?:<>|≠)\s*/.test(value)) {
+                values = value.replace(/^(?:<>|≠)\s*/, '').split(/\s+(?:<>|≠)\s*/);
+            }
+            if (!values || values.length < 2 || values.some(item => !item.trim())) return value;
+            if (values.some(item => /^(?:LIKE|IN|NOT|NI|AND|OR|OU)\b/i.test(item.trim()))) return value;
+            return `NOT IN (${values.map(item => criteriaValueForSql(item.trim())).join(', ')})`;
+        }
+
         function matchesCriterion(value, criteriaText) {
             const raw = String(criteriaText ?? '').trim();
             if (!raw) return true;
 
             const normalized = raw.replace(/\s+/g, ' ');
+            const shorthandExclusions = normalizeMultipleExclusions(normalized);
+            if (shorthandExclusions !== normalized) return matchesCriterion(value, shorthandExclusions);
             const alternatives = normalized.split(/\s+(?:OR|OU)\s+/i);
             if (alternatives.length > 1) {
                 return alternatives.some(part => matchesCriterion(value, part));
@@ -2629,6 +2656,9 @@
             const lowerValue = stringValue.toLowerCase();
             const trimmed = normalized;
 
+            if (/^IS\s+NULL$/i.test(trimmed)) return stringValue === '';
+            if (/^IS\s+NOT\s+NULL$/i.test(trimmed)) return stringValue !== '';
+
             if (/^NOT\s+LIKE\s+/i.test(trimmed)) {
                 const pattern = trimmed.replace(/^NOT\s+LIKE\s+/i, '').replace(/^['"]|['"]$/g, '').trim();
                 const regex = wildcardPatternToRegExp(pattern);
@@ -2639,6 +2669,13 @@
                 const pattern = trimmed.replace(/^LIKE\s+/i, '').replace(/^['"]|['"]$/g, '').trim();
                 const regex = wildcardPatternToRegExp(pattern);
                 return regex.test(stringValue);
+            }
+
+            const listMatch = trimmed.match(/^(NOT\s+IN|IN)\s*\((.*)\)$/i);
+            if (listMatch) {
+                const values = splitSqlList(listMatch[2]).map(item => item.trim().replace(/^['"]|['"]$/g, '').toLowerCase());
+                const isIncluded = values.includes(lowerValue);
+                return listMatch[1].toUpperCase() === 'NOT IN' ? !isIncluded : isIncluded;
             }
 
             if (/^NOT\s+/i.test(trimmed)) {
@@ -2689,8 +2726,30 @@
             }
         }
 
+        function splitSqlList(value) {
+            const items = [];
+            let current = '';
+            let quote = '';
+            for (const character of String(value ?? '')) {
+                if (quote) {
+                    current += character;
+                    if (character === quote) quote = '';
+                } else if (character === "'" || character === '"') {
+                    quote = character;
+                    current += character;
+                } else if (character === ',') {
+                    items.push(current);
+                    current = '';
+                } else {
+                    current += character;
+                }
+            }
+            items.push(current);
+            return items;
+        }
+
         function criteriaToSql(criteria) {
-            const value = String(criteria ?? '').trim();
+            const value = normalizeMultipleExclusions(criteria);
             if (!value) return '';
 
             const alternatives = value.split(/\s+(?:OR|OU)\s+/i);
@@ -2700,11 +2759,29 @@
 
             const comparison = value.match(/^(<=|>=|<>|=|<|>)\s*(.*)$/i);
             if (comparison) return `${comparison[1]} ${comparison[2]}`;
+            if (/^IS\s+NOT\s+NULL$/i.test(value) || /^IS\s+NULL$/i.test(value)) return value.toUpperCase();
             if (/^NOT\s+LIKE\s+/i.test(value)) return value;
             if (/^LIKE\s+/i.test(value)) return value;
             if (/^NOT\s+/i.test(value)) return value;
             if (/^(IS\b|IN\b)/i.test(value)) return value;
             return `LIKE "*${value.replace(/"/g, '""')}*"`;
+        }
+
+        function criteriaValueForSql(criteria) {
+            const value = String(criteria ?? '').trim().replace(/^['"]|['"]$/g, '');
+            return `'${value.replace(/'/g, "''")}'`;
+        }
+
+        function combineCriteriaToSql(criteriaValues) {
+            const values = criteriaValues
+                .flatMap(criteria => String(criteria || '').trim().split(/\s+(?:OR|OU)\s+/i))
+                .map(criteria => criteria.trim())
+                .filter(Boolean);
+            if (values.length > 1 && values.every(criteria => /^(?:<>|NOT\s*=)\s*/i.test(criteria))) {
+                const excludedValues = values.map(criteria => criteria.replace(/^(?:<>|NOT\s*=)\s*/i, '').trim());
+                return `NOT IN (${excludedValues.map(criteriaValueForSql).join(', ')})`;
+            }
+            return values.map(criteriaToSql).filter(Boolean).join(' OR ');
         }
 
         function getQueryPrimaryTable() {
@@ -2759,11 +2836,13 @@
                 .filter(row => row.field && (row.criteria.trim() || row.or.trim()))
                 .map(row => {
                     const field = queryFieldToSql(row);
-                    const alternatives = [row.criteria, row.or]
+                    const criteriaValues = [row.criteria, row.or]
                         .map(criteria => criteria.trim())
-                        .filter(Boolean)
-                        .map(criteria => `${field} ${criteriaToSql(criteria)}`);
-                    return alternatives.length > 1 ? `(${alternatives.join(' OR ')})` : alternatives[0];
+                        .filter(Boolean);
+                    const combinedCriteria = combineCriteriaToSql(criteriaValues);
+                    return criteriaValues.length > 1
+                        ? (combinedCriteria.startsWith('NOT IN ') ? `${field} ${combinedCriteria}` : `(${criteriaValues.map(criteria => `${field} ${criteriaToSql(criteria)}`).join(' OR ')})`)
+                        : `${field} ${combinedCriteria}`;
                 });
             if (criteriaGroups.length > 0) sqlLines.push(`WHERE ${criteriaGroups.join('\n  AND ')}`);
 
@@ -3402,6 +3481,9 @@
                     const getQueryPrimaryTable = ${getQueryPrimaryTable.toString()};
                     const wildcardPatternToRegExp = ${wildcardPatternToRegExp.toString()};
                     const compareValues = ${compareValues.toString()};
+                    const splitSqlList = ${splitSqlList.toString()};
+                    const criteriaValueForSql = ${criteriaValueForSql.toString()};
+                    const normalizeMultipleExclusions = ${normalizeMultipleExclusions.toString()};
                     const matchesCriterion = ${matchesCriterion.toString()};
                     const executeQueryEngine = ${executeQueryEngine.toString()};
                     self.onmessage = event => {
