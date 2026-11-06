@@ -42,6 +42,7 @@
         let sheetQueriesLoading = false;
         let activeSheetQuery = null;
         let activeQueryId = null;
+        let isNewQueryDraft = false;
         let contextMenuQueryId = null;
         let contextMenuQuerySource = 'saved';
         let pendingRenameQueryId = null;
@@ -129,9 +130,9 @@
         function updateSqlButtonState() {
             const button = document.getElementById('showSqlButton');
             if (!button) return;
-            const hasSelectedQuery = savedQueries.some(query => query.id === activeQueryId) || Boolean(activeSheetQuery);
+            const hasSelectedQuery = isNewQueryDraft || savedQueries.some(query => query.id === activeQueryId) || Boolean(activeSheetQuery);
             button.disabled = !hasSelectedQuery;
-            button.title = hasSelectedQuery ? 'Afficher la requête sélectionnée en SQL' : 'Sélectionnez une requête enregistrée';
+            button.title = hasSelectedQuery ? 'Afficher et modifier la requête en SQL' : 'Sélectionnez une requête enregistrée';
         }
 
         function loadSavedQueries() {
@@ -727,6 +728,7 @@
 
             activeQueryId = null;
             activeSheetQuery = query;
+            isNewQueryDraft = false;
             activeSqlText = null;
             appState.canvasTables = parsed.canvasTables;
             appState.joins = parsed.joins;
@@ -1009,6 +1011,7 @@
             appState.joins = [];
             activeQueryId = null;
             activeSheetQuery = null;
+            isNewQueryDraft = true;
             activeSqlText = null;
             lastQueryResults = [];
             lastQueryResultColumns = [];
@@ -1029,6 +1032,7 @@
             if (!persistSavedQueries()) return false;
             activeQueryId = query.id;
             activeSheetQuery = null;
+            isNewQueryDraft = false;
             updateSqlButtonState();
             savedQueryDefinition = getQueryDefinition();
             updateSaveButtonState();
@@ -1052,6 +1056,7 @@
             if (appState.queryGridRows.length === 0) initQueryGrid();
             else renderQueryGrid();
             activeQueryId = query.id;
+            isNewQueryDraft = false;
             updateQueryDesignTabLabel();
             updateSqlButtonState();
             savedQueryDefinition = getQueryDefinition();
@@ -1097,6 +1102,7 @@
             appState.queryGridRows = draft.queryGridRows || appState.queryGridRows;
             activeQueryId = draft.activeQueryId || null;
             activeSheetQuery = null;
+            isNewQueryDraft = !activeQueryId;
             activeSqlText = typeof draft.sqlText === 'string' ? draft.sqlText : null;
             updateQueryDesignTabLabel();
             updateSqlButtonState();
@@ -2909,7 +2915,7 @@
         }
 
         function showSqlView() {
-            if (!savedQueries.some(query => query.id === activeQueryId) && !activeSheetQuery) return;
+            if (!isNewQueryDraft && !savedQueries.some(query => query.id === activeQueryId) && !activeSheetQuery) return;
             document.getElementById('sqlQueryText').value = generateQuerySql();
             const modal = document.getElementById('sqlViewModal');
             modal.classList.remove('hidden');
@@ -2919,6 +2925,38 @@
         function updateSqlEditorState() {
             activeSqlText = document.getElementById('sqlQueryText').value;
             updateSaveButtonState();
+        }
+
+        function applySqlView() {
+            const sqlText = document.getElementById('sqlQueryText').value.trim();
+            if (!sqlText) {
+                alert('Saisissez une requête SQL avant de l’appliquer.');
+                return;
+            }
+
+            let parsed;
+            try {
+                parsed = parseSheetQuerySql(sqlText);
+            } catch (error) {
+                alert(`Impossible d’appliquer la requête SQL : ${error.message}`);
+                return;
+            }
+
+            appState.canvasTables = parsed.canvasTables;
+            appState.joins = parsed.joins;
+            appState.queryGridRows = parsed.queryGridRows;
+            activeSqlText = sqlText;
+            isNewQueryDraft = !activeQueryId && !activeSheetQuery;
+            renderQueryGrid();
+            refreshNavigationPane();
+            renderCanvasTables();
+            renderSvgJoins();
+            updateQueryDesignTabLabel();
+            updateSqlButtonState();
+            updateSaveButtonState();
+            updateActionButtonsState();
+            document.getElementById('statusBarMode').textContent = 'Requête SQL appliquée';
+            closeSqlView();
         }
 
         function saveSqlView() {
