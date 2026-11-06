@@ -1943,7 +1943,7 @@
             appState.joins = appState.joins.filter(join => !namesToDelete.has(join.fromTable) && !namesToDelete.has(join.toTable));
             appState.queryGridRows = appState.queryGridRows.map(queryRow => {
                 if (!queryRow.table || !lowerCaseNames.has(queryRow.table.toLowerCase())) return queryRow;
-                return { field: '', table: '', alias: '', expression: '', total: '', show: false, sort: '', criteria: '', or: '', width: queryRow.width };
+                return { field: '', table: '', alias: '', expression: '', total: 'GROUP BY', show: false, sort: '', criteria: '', or: '', width: queryRow.width };
             });
             selectedTableNames = new Set([...selectedTableNames].filter(name => !namesToDelete.has(name)));
 
@@ -2354,6 +2354,9 @@
 
         function renderQueryGrid() {
             const tbody = document.getElementById('queryGridBody');
+            appState.queryGridRows.forEach(queryRow => {
+                if (!queryRow.total) queryRow.total = 'GROUP BY';
+            });
             tbody.innerHTML = '';
             const gridRows = [
                 { label: 'Champ :', key: 'field', control: 'field' },
@@ -2403,7 +2406,7 @@
                             option.textContent = text;
                             select.appendChild(option);
                         });
-                        select.value = queryRow.total || '';
+                        select.value = queryRow.total || 'GROUP BY';
                         td.appendChild(select);
                     } else if (gridRow.control === 'sort') {
                         const select = document.createElement('select');
@@ -2636,6 +2639,7 @@
                 table: tableName,
                 alias: '',
                 expression: fieldName,
+                total: appState.queryGridRows[columnIndex].total || 'GROUP BY',
                 show: true
             };
             renderQueryGrid();
@@ -2651,6 +2655,7 @@
                 appState.queryGridRows[row][col] = e.target.value;
                 if (col === 'field') {
                     const queryRow = appState.queryGridRows[row];
+                    if (!queryRow.total) queryRow.total = 'GROUP BY';
                     const parsedExpression = parseQueryFieldExpression(e.target.value, queryRow.table, queryRow.field);
                     queryRow.expression = e.target.value;
                     queryRow.field = parsedExpression.field;
