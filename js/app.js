@@ -642,16 +642,13 @@
                 const condition = stripOuterSqlParentheses(conditionText);
                 const reference = readSqlReference(condition);
                 const rest = condition.slice(reference.end).trim();
-                const operatorMatch = rest.match(/^(IS\s+NOT\s+NULL|IS\s+NULL|NOT\s+LIKE|NOT\s+IN|LIKE|IN|>=|<=|<>|=|>|<)\s*(.*)$/i);
+                const operatorMatch = rest.match(/^(IS\s+NOT\s+NULL|IS\s+NULL|NOT\s+LIKE|NOT\s+IN|NOT\s*=|LIKE|IN|>=|<=|<>|!=|=|>|<)\s*(.*)$/i);
                 if (!operatorMatch) throw new Error(`Critère SQL non pris en charge : ${condition}.`);
                 const field = resolveReference(reference);
                 const operator = operatorMatch[1].replace(/\s+/g, ' ').toUpperCase();
                 let operand = operatorMatch[2].trim();
-                if ((operand.startsWith('"') && operand.endsWith('"')) || (operand.startsWith("'") && operand.endsWith("'"))) {
-                    if (!['LIKE', 'NOT LIKE', 'IN', 'NOT IN'].includes(operator)) operand = operand.slice(1, -1);
-                }
                 if (operator === 'IS NULL' || operator === 'IS NOT NULL') operand = operator;
-                else if (operator === 'LIKE' || operator === 'NOT LIKE') operand = `${operator} ${operatorMatch[2].trim()}`;
+                else if (operator === 'NOT =' || operator === '!=') operand = `<> ${operand}`;
                 else operand = `${operator} ${operand}`;
                 return { ...field, criterion: operand };
             };
