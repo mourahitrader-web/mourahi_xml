@@ -360,6 +360,19 @@
             </div>
         </form>
     </div>
+    <div id="newQueryConfirmModal" class="fixed inset-0 bg-black/40 z-[75] hidden flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="newQueryConfirmTitle">
+        <div class="w-96 max-w-full overflow-hidden rounded border border-gray-400 bg-white shadow-2xl">
+            <div class="bg-[#b91c1c] px-4 py-2 font-bold text-white">
+                <span id="newQueryConfirmTitle">Nouvelle requête</span>
+            </div>
+            <div class="px-4 py-5 text-gray-800">Enregistrer les modifications avant de créer une nouvelle requête ?</div>
+            <div class="flex justify-end gap-2 border-t border-gray-300 bg-gray-100 px-4 py-2">
+                <button type="button" onclick="resolveNewQueryConfirmation('cancel')" class="rounded bg-gray-300 px-3 py-1.5 text-xs text-gray-800 hover:bg-gray-400">Annuler</button>
+                <button type="button" onclick="resolveNewQueryConfirmation('no')" class="rounded bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700">Non</button>
+                <button type="button" onclick="resolveNewQueryConfirmation('yes')" class="rounded bg-blue-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-800">Oui</button>
+            </div>
+        </div>
+    </div>
     <div id="savedQueryContextMenu" class="fixed z-[80] hidden min-w-36 overflow-hidden rounded border border-gray-300 bg-white py-1 shadow-xl" role="menu" aria-label="Actions sur la requête">
         <button type="button" data-query-action="duplicate" onclick="handleSavedQueryContextAction('duplicate')" role="menuitem" class="block w-full px-3 py-1.5 text-left text-gray-800 hover:bg-gray-100">
             <i class="fa-regular fa-copy mr-2 text-gray-500"></i>Dupliquer

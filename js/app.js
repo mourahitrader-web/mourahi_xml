@@ -977,19 +977,32 @@
             }
         }
 
+        function closeNewQueryConfirmation() {
+            document.getElementById('newQueryConfirmModal').classList.add('hidden');
+        }
+
+        function resolveNewQueryConfirmation(decision) {
+            closeNewQueryConfirmation();
+            if (decision === 'cancel') return;
+            if (decision === 'no') {
+                resetToNewQuery();
+                return;
+            }
+
+            if (savedQueries.some(query => query.id === activeQueryId)) {
+                if (!saveCurrentQuery()) return;
+                resetToNewQuery();
+            } else {
+                pendingNewQueryAfterSave = true;
+                openQueryNameModal();
+            }
+        }
+
         function startNewQuery() {
             if (getQueryDefinition() !== savedQueryDefinition) {
-                if (confirm('Enregistrer les modifications avant de créer une nouvelle requête ?')) {
-                    if (savedQueries.some(query => query.id === activeQueryId)) {
-                        if (!saveCurrentQuery()) return;
-                        resetToNewQuery();
-                    } else {
-                        pendingNewQueryAfterSave = true;
-                        openQueryNameModal();
-                    }
-                    return;
-                }
-                if (!confirm('Abandonner les modifications et créer une nouvelle requête ?')) return;
+                const modal = document.getElementById('newQueryConfirmModal');
+                modal.classList.remove('hidden');
+                return;
             }
             resetToNewQuery();
         }
