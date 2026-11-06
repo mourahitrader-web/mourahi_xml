@@ -501,6 +501,33 @@
             return value;
         }
 
+        function removeFromGroupingParentheses(text) {
+            let result = '';
+            let inBracket = false;
+            let quote = '';
+            for (let index = 0; index < text.length; index++) {
+                const character = text[index];
+                if (inBracket) {
+                    result += character;
+                    if (character === ']' && text[index + 1] === ']') result += text[++index];
+                    else if (character === ']') inBracket = false;
+                } else if (quote) {
+                    result += character;
+                    if (character === quote && text[index + 1] === quote) result += text[++index];
+                    else if (character === quote) quote = '';
+                } else if (character === '[') {
+                    inBracket = true;
+                    result += character;
+                } else if (character === '"' || character === "'") {
+                    quote = character;
+                    result += character;
+                } else if (character !== '(' && character !== ')') {
+                    result += character;
+                }
+            }
+            return result;
+        }
+
         function parseSheetQuerySql(sqlText) {
             const sql = String(sqlText || '').trim().replace(/;\s*$/, '');
             if (!/^SELECT\b/i.test(sql)) throw new Error('Seules les requêtes SELECT sont prises en charge.');
@@ -511,7 +538,9 @@
             const whereIndex = findSqlKeywordIndex(sql, 'WHERE', fromIndex + 4);
             const orderIndex = findSqlKeywordIndex(sql, 'ORDER BY', fromIndex + 4);
             const endFrom = [whereIndex, orderIndex].filter(index => index >= 0).reduce((min, index) => Math.min(min, index), sql.length);
-            const fromText = sql.slice(fromIndex + 4, endFrom).trim();
+            // Access encloses chained joins in parentheses. The designer only
+            // supports table joins, so grouping parentheses can be ignored here.
+            const fromText = removeFromGroupingParentheses(sql.slice(fromIndex + 4, endFrom).trim());
             const whereText = whereIndex < 0 ? '' : sql.slice(whereIndex + 5, orderIndex >= 0 ? orderIndex : sql.length).trim();
             const orderText = orderIndex < 0 ? '' : sql.slice(orderIndex + 8).trim();
 
@@ -1126,7 +1155,8 @@
             }
 
             hideXmlLoading();
-            const details = [`${files.length} fichier(s) traité(s) : ${files.map(file => file.name).join(', ')}`];
+            const details = [`${files.length} fichier(s) traité(s) :`];
+            files.forEach(file => details.push(`- ${file.name}`));
             if (addedTableNames.length > 0) {
                 details.push(`${addedTableNames.length} table(s) ajoutée(s)`);
             }
@@ -1136,9 +1166,12 @@
             if (addedTableNames.length === 0 && existingTableNames.length === 0 && errors.length === 0) {
                 details.push('Aucune table trouvée dans les fichiers.');
             }
-            if (errors.length > 0) details.push(`Erreurs : ${errors.join(' · ')}`);
+            if (errors.length > 0) {
+                details.push(`Erreurs :`);
+                errors.forEach(error => details.push(`- ${error}`));
+            }
             showXmlImportNotification(
-                details.join(' · '),
+                details.join('\n'),
                 errors.length > 0 ? 'Import terminé avec des erreurs' : 'Import XML réussi'
             );
         }
@@ -2293,7 +2326,7 @@
                 { label: 'Libellé :', key: 'alias', control: 'text', placeholder: 'Libellé' },
                 { label: 'Tri :', key: 'sort', control: 'sort' },
                 { label: 'Afficher :', key: 'show', control: 'checkbox' },
-                { label: 'Critères :', key: 'criteria', control: 'text', placeholder: 'Ex. IS NULL' },
+                { label: 'Critères :', key: 'criteria', control: 'text', placeholder: 'Ex. Like "*abc*" ou <> 0' },
                 { label: 'Ou :', key: 'or', control: 'text', placeholder: 'Ou' }
             ];
 
@@ -2550,8 +2583,6 @@
             };
             renderQueryGrid();
             updateSaveButtonState();
-            const gridScroller = document.querySelector('#queryGridPanel > .flex-1.overflow-auto');
-            if (gridScroller) gridScroller.scrollLeft = gridScroller.scrollWidth;
         }
 
         function updateQueryGrid(e, normalizeCriteria = true) {
@@ -2619,6 +2650,12 @@
             return new RegExp(`^${sanitized}$`, 'i');
         }
 
+        function accessLikePattern(pattern) {
+            return String(pattern ?? '')
+                .replace(/%/g, '*')
+                .replace(/_/g, '?');
+        }
+
         function normalizeMultipleExclusions(criteria) {
             const value = String(criteria ?? '').trim();
             if (!value) return value;
@@ -2637,7 +2674,7 @@
         }
 
         function matchesCriterion(value, criteriaText) {
-            const raw = String(criteriaText ?? '').trim();
+            const raw = String(criteriaText ?? '').trim().replace(/^\s*!=\s*/, '<> ');
             if (!raw) return true;
 
             const normalized = raw.replace(/\s+/g, ' ');
@@ -2660,13 +2697,13 @@
             if (/^IS\s+NOT\s+NULL$/i.test(trimmed)) return stringValue !== '';
 
             if (/^NOT\s+LIKE\s+/i.test(trimmed)) {
-                const pattern = trimmed.replace(/^NOT\s+LIKE\s+/i, '').replace(/^['"]|['"]$/g, '').trim();
+                const pattern = accessLikePattern(trimmed.replace(/^NOT\s+LIKE\s+/i, '').replace(/^['"]|['"]$/g, '').trim());
                 const regex = wildcardPatternToRegExp(pattern);
                 return !regex.test(stringValue);
             }
 
             if (/^LIKE\s+/i.test(trimmed)) {
-                const pattern = trimmed.replace(/^LIKE\s+/i, '').replace(/^['"]|['"]$/g, '').trim();
+                const pattern = accessLikePattern(trimmed.replace(/^LIKE\s+/i, '').replace(/^['"]|['"]$/g, '').trim());
                 const regex = wildcardPatternToRegExp(pattern);
                 return regex.test(stringValue);
             }
@@ -2685,7 +2722,7 @@
                     return !compareValues(stringValue, comparison[1], comparison[2]);
                 }
                 if (/[\*%_]/.test(operand)) {
-                    const regex = wildcardPatternToRegExp(operand);
+                    const regex = wildcardPatternToRegExp(accessLikePattern(operand));
                     return !regex.test(stringValue);
                 }
                 return !lowerValue.includes(operand.toLowerCase());
@@ -2699,7 +2736,7 @@
             if (/^(IS\b|IN\b)/i.test(trimmed)) return trimmed.toUpperCase().startsWith('IS ') || trimmed.toUpperCase().startsWith('IN ');
 
             if (/[\*%_]/.test(trimmed)) {
-                return wildcardPatternToRegExp(trimmed).test(stringValue);
+                return wildcardPatternToRegExp(accessLikePattern(trimmed)).test(stringValue);
             }
 
             return lowerValue.includes(trimmed.toLowerCase().replace(/^['"]|['"]$/g, ''));
@@ -2749,7 +2786,7 @@
         }
 
         function criteriaToSql(criteria) {
-            const value = normalizeMultipleExclusions(criteria);
+            const value = normalizeMultipleExclusions(criteria).replace(/^\s*!=\s*/, '<> ');
             if (!value) return '';
 
             const alternatives = value.split(/\s+(?:OR|OU)\s+/i);
@@ -2760,11 +2797,19 @@
             const comparison = value.match(/^(<=|>=|<>|=|<|>)\s*(.*)$/i);
             if (comparison) return `${comparison[1]} ${comparison[2]}`;
             if (/^IS\s+NOT\s+NULL$/i.test(value) || /^IS\s+NULL$/i.test(value)) return value.toUpperCase();
-            if (/^NOT\s+LIKE\s+/i.test(value)) return value;
-            if (/^LIKE\s+/i.test(value)) return value;
-            if (/^NOT\s+/i.test(value)) return value;
+            if (/^NOT\s+LIKE\s+/i.test(value)) {
+                return `NOT LIKE ${criteriaValueForSql(accessLikePattern(value.replace(/^NOT\s+LIKE\s+/i, '').trim()))}`;
+            }
+            if (/^LIKE\s+/i.test(value)) {
+                return `LIKE ${criteriaValueForSql(accessLikePattern(value.replace(/^LIKE\s+/i, '').trim()))}`;
+            }
+            if (/^NOT\s*=\s*/i.test(value)) return `<> ${value.replace(/^NOT\s*=\s*/, '')}`;
+            if (/^NOT\s+/i.test(value)) {
+                const operand = value.replace(/^NOT\s+/i, '').trim().replace(/^['"]|['"]$/g, '');
+                return `NOT LIKE ${criteriaValueForSql(`*${operand}*`)}`;
+            }
             if (/^(IS\b|IN\b)/i.test(value)) return value;
-            return `LIKE "*${value.replace(/"/g, '""')}*"`;
+            return `LIKE ${criteriaValueForSql(`*${value}*`)}`;
         }
 
         function criteriaValueForSql(criteria) {
@@ -2774,7 +2819,7 @@
 
         function combineCriteriaToSql(criteriaValues) {
             const values = criteriaValues
-                .flatMap(criteria => String(criteria || '').trim().split(/\s+(?:OR|OU)\s+/i))
+                .flatMap(criteria => String(criteria || '').trim().replace(/^\s*!=\s*/, '<> ').split(/\s+(?:OR|OU)\s+/i))
                 .map(criteria => criteria.trim())
                 .filter(Boolean);
             if (values.length > 1 && values.every(criteria => /^(?:<>|NOT\s*=)\s*/i.test(criteria))) {
@@ -2822,15 +2867,18 @@
                     return `    ${queryFieldToSql(row)}${alias}`;
                 })
                 : ['    *'];
-            const sqlLines = ['SELECT', selectLines.join(',\n'), `FROM ${quoteSqlIdentifier(primaryTable)}`];
-
-            appState.joins.forEach(join => {
-                if (!availableTables.has(join.fromTable) || !availableTables.has(join.toTable)) return;
+            const validJoins = appState.joins.filter(join =>
+                availableTables.has(join.fromTable) && availableTables.has(join.toTable)
+            );
+            let fromSql = quoteSqlIdentifier(primaryTable);
+            validJoins.forEach((join, index) => {
                 const joinType = ['INNER', 'LEFT', 'RIGHT'].includes(join.type) ? join.type : 'INNER';
-                sqlLines.push(
-                    `${joinType} JOIN ${quoteSqlIdentifier(join.toTable)} ON ${quoteSqlIdentifier(join.fromTable)}.${quoteSqlIdentifier(join.fromField)} = ${quoteSqlIdentifier(join.toTable)}.${quoteSqlIdentifier(join.toField)}`
-                );
+                const joinSql = `${joinType} JOIN ${quoteSqlIdentifier(join.toTable)} ON ${quoteSqlIdentifier(join.fromTable)}.${quoteSqlIdentifier(join.fromField)} = ${quoteSqlIdentifier(join.toTable)}.${quoteSqlIdentifier(join.toField)}`;
+                fromSql = index === validJoins.length - 1
+                    ? `${validJoins.length > 1 ? `(${fromSql})` : fromSql} ${joinSql}`
+                    : `(${fromSql} ${joinSql})`;
             });
+            const sqlLines = ['SELECT', selectLines.join(',\n'), `FROM ${fromSql}`];
 
             const criteriaGroups = appState.queryGridRows
                 .filter(row => row.field && (row.criteria.trim() || row.or.trim()))
@@ -3480,6 +3528,7 @@
                     const QUERY_MAX_INTERMEDIATE_ROWS = ${QUERY_MAX_INTERMEDIATE_ROWS};
                     const getQueryPrimaryTable = ${getQueryPrimaryTable.toString()};
                     const wildcardPatternToRegExp = ${wildcardPatternToRegExp.toString()};
+                    const accessLikePattern = ${accessLikePattern.toString()};
                     const compareValues = ${compareValues.toString()};
                     const splitSqlList = ${splitSqlList.toString()};
                     const criteriaValueForSql = ${criteriaValueForSql.toString()};
