@@ -2703,6 +2703,7 @@
 
             if (/^IS\s+NULL$/i.test(trimmed)) return stringValue === '';
             if (/^IS\s+NOT\s+NULL$/i.test(trimmed)) return stringValue !== '';
+            if (/^(['"])\1$/.test(trimmed)) return stringValue === '';
 
             if (/^NOT\s+LIKE\s+/i.test(trimmed)) {
                 const pattern = accessLikePattern(trimmed.replace(/^NOT\s+LIKE\s+/i, '').replace(/^['"]|['"]$/g, '').trim());
@@ -2805,6 +2806,7 @@
             const comparison = value.match(/^(<=|>=|<>|=|<|>)\s*(.*)$/i);
             if (comparison) return `${comparison[1]} ${comparison[2]}`;
             if (/^IS\s+NOT\s+NULL$/i.test(value) || /^IS\s+NULL$/i.test(value)) return value.toUpperCase();
+            if (/^(['"])\1$/.test(value)) return '= \'\'';
             if (/^NOT\s+LIKE\s+/i.test(value)) {
                 return `NOT LIKE ${criteriaValueForSql(accessLikePattern(value.replace(/^NOT\s+LIKE\s+/i, '').trim()))}`;
             }
@@ -2902,8 +2904,17 @@
                         .map(criteria => criteria.trim())
                         .filter(Boolean);
                     const combinedCriteria = combineCriteriaToSql(criteriaValues);
-                    return criteriaValues.length > 1
-                        ? (combinedCriteria.startsWith('NOT IN ') ? `${field} ${combinedCriteria}` : `(${criteriaValues.map(criteria => `${field} ${criteriaToSql(criteria)}`).join(' OR ')})`)
+                    const hasAlternatives = criteriaValues.some(criteria => /\s+(?:OR|OU)\s+/i.test(criteria));
+                    const criteriaParts = [];
+                    criteriaValues.forEach(criteria => {
+                        criteria.split(/\s+(?:OR|OU)\s+/i).forEach(part => criteriaParts.push(part));
+                    });
+                    return criteriaValues.length > 1 || hasAlternatives
+                        ? (combinedCriteria.startsWith('NOT IN ')
+                            ? `${field} ${combinedCriteria}`
+                            : `(${criteriaParts
+                                .map(criteria => `${field} ${criteriaToSql(criteria)}`)
+                                .join(' OR ')})`)
                         : `${field} ${combinedCriteria}`;
                 });
             if (criteriaGroups.length > 0) sqlLines.push(`WHERE ${criteriaGroups.join('\n  AND ')}`);
