@@ -161,40 +161,70 @@
             updateNavigationTabCounts();
             list.innerHTML = '';
             sheetList.innerHTML = '';
+            const groupedQueries = new Map();
             sheetQueries.forEach((query, index) => {
-                const row = document.createElement('div');
-                row.className = `flex items-center justify-between gap-1 p-1.5 rounded group ${activeSheetQuery && activeSheetQuery.name === query.name ? 'bg-red-50 text-red-800' : 'hover:bg-gray-100 text-gray-800'}`;
-                row.title = query.description;
-
-                const nameButton = document.createElement('button');
-                nameButton.type = 'button';
-                nameButton.className = 'flex min-w-0 items-center gap-2 text-left';
-                nameButton.title = query.description || query.name;
-                nameButton.innerHTML = '<i class="fa-solid fa-table-list text-blue-700"></i>';
-                const name = document.createElement('span');
-                name.className = 'truncate';
-                name.textContent = query.name;
-                nameButton.appendChild(name);
-                nameButton.addEventListener('click', () => loadSheetQuery(index));
-                nameButton.addEventListener('contextmenu', event => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    openSavedQueryContextMenu(index, 'shared', event.clientX, event.clientY);
+                const groupName = query.group || 'Sans groupe';
+                if (!groupedQueries.has(groupName)) groupedQueries.set(groupName, []);
+                groupedQueries.get(groupName).push({ query, index });
+            });
+            groupedQueries.forEach((queries, groupName) => {
+                const group = document.createElement('section');
+                group.className = 'mb-1 border-b border-[#e1dfdd]';
+                const groupButton = document.createElement('button');
+                groupButton.type = 'button';
+                groupButton.className = 'flex w-full items-center justify-between px-2 py-1.5 text-left font-semibold text-[#323130] hover:bg-white';
+                groupButton.setAttribute('aria-expanded', 'true');
+                const groupLabel = document.createElement('span');
+                groupLabel.innerHTML = `<i class="fa-solid fa-chevron-down mr-2 text-[10px] text-gray-500"></i>${groupName}`;
+                const groupCount = document.createElement('span');
+                groupCount.className = 'text-[10px] font-normal text-gray-500';
+                groupCount.textContent = String(queries.length);
+                groupButton.append(groupLabel, groupCount);
+                const groupList = document.createElement('div');
+                groupList.className = 'pb-1';
+                groupButton.addEventListener('click', () => {
+                    const expanded = groupButton.getAttribute('aria-expanded') === 'true';
+                    groupButton.setAttribute('aria-expanded', String(!expanded));
+                    groupList.classList.toggle('hidden', expanded);
+                    groupLabel.querySelector('i').className = `fa-solid ${expanded ? 'fa-chevron-right' : 'fa-chevron-down'} mr-2 text-[10px] text-gray-500`;
                 });
-                nameButton.addEventListener('dblclick', event => {
-                    event.stopPropagation();
-                    loadSheetQuery(index);
-                    showQueryDesignTab();
-                });
+                queries.forEach(({ query, index }) => {
+                    const row = document.createElement('div');
+                    row.className = `flex items-center justify-between gap-1 rounded p-1.5 pl-5 group ${activeSheetQuery && activeSheetQuery.name === query.name ? 'bg-red-50 text-red-800' : 'text-gray-800 hover:bg-gray-100'}`;
+                    row.title = query.name;
 
-                const loadButton = document.createElement('button');
-                loadButton.type = 'button';
-                loadButton.className = 'shrink-0 rounded px-1.5 py-0.5 text-[11px] text-blue-700 hover:bg-blue-50';
-                loadButton.textContent = 'Charger';
-                loadButton.title = query.description || `Charger ${query.name}`;
-                loadButton.addEventListener('click', () => loadSheetQuery(index));
-                row.append(nameButton, loadButton);
-                sheetList.appendChild(row);
+                    const nameButton = document.createElement('button');
+                    nameButton.type = 'button';
+                    nameButton.className = 'flex min-w-0 items-center gap-2 text-left';
+                    nameButton.title = `Charger ${query.name}`;
+                    nameButton.innerHTML = '<i class="fa-solid fa-table-list text-blue-700"></i>';
+                    const name = document.createElement('span');
+                    name.className = 'truncate';
+                    name.textContent = query.name;
+                    nameButton.appendChild(name);
+                    nameButton.addEventListener('click', () => loadSheetQuery(index));
+                    nameButton.addEventListener('contextmenu', event => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        openSavedQueryContextMenu(index, 'shared', event.clientX, event.clientY);
+                    });
+                    nameButton.addEventListener('dblclick', event => {
+                        event.stopPropagation();
+                        loadSheetQuery(index);
+                        showQueryDesignTab();
+                    });
+
+                    const loadButton = document.createElement('button');
+                    loadButton.type = 'button';
+                    loadButton.className = 'shrink-0 rounded px-1.5 py-0.5 text-[11px] text-blue-700 hover:bg-blue-50';
+                    loadButton.textContent = 'Charger';
+                    loadButton.title = `Charger ${query.name}`;
+                    loadButton.addEventListener('click', () => loadSheetQuery(index));
+                    row.append(nameButton, loadButton);
+                    groupList.appendChild(row);
+                });
+                group.append(groupButton, groupList);
+                sheetList.appendChild(group);
             });
 
             if (sheetQueries.length === 0) {
@@ -266,17 +296,19 @@
 
                 const headers = records[0].map(header => header.trim().toLowerCase());
                 const nameIndex = headers.indexOf('nom_requete');
+                const groupIndex = headers.indexOf('groupe');
                 const descriptionIndex = headers.indexOf('description');
                 const sqlIndex = headers.indexOf('requete');
-                if ([nameIndex, descriptionIndex, sqlIndex].some(index => index < 0)) {
-                    throw new Error('Colonnes attendues introuvables : nom_requete, description, requete.');
+                const labelIndex = groupIndex >= 0 ? groupIndex : descriptionIndex;
+                if ([nameIndex, labelIndex, sqlIndex].some(index => index < 0)) {
+                    throw new Error('Colonnes attendues introuvables : nom_requete, groupe, requete.');
                 }
 
                 sheetQueries = records.slice(1)
                     .filter(record => record.some(value => value.trim()))
                     .map(record => ({
                         name: (record[nameIndex] || '').trim(),
-                        description: (record[descriptionIndex] || '').trim(),
+                        group: (record[labelIndex] || '').trim(),
                         sql: (record[sqlIndex] || '').trim()
                     }))
                     .filter(query => query.name && query.sql);
