@@ -67,6 +67,7 @@
         let openTableTabs = [];
         let activeWorkspaceTab = 'query-design';
         let queryWorkspaceView = 'design';
+        let queryWorkspaceViewBeforeDisplay = null;
         let ribbonMode = 'display';
         let activeRibbonTab = 'display';
         let queryResultsWorkspaceCacheId = null;
@@ -149,6 +150,9 @@
 
         function switchRibbonMode(mode) {
             if (mode !== 'display' && mode !== 'advanced') return;
+            if (mode === 'display' && ribbonMode === 'advanced' && activeWorkspaceTab === 'query-design') {
+                queryWorkspaceViewBeforeDisplay = queryWorkspaceView;
+            }
             ribbonMode = mode;
             activeRibbonTab = mode;
             if (ribbonMode === 'display') {
@@ -163,16 +167,23 @@
                     showDisplayHomeTab();
                 }
             } else if (activeWorkspaceTab === 'display-home') {
-                showQueryDesignTab();
-            } else if (activeWorkspaceTab === 'query-design') {
-                if (queryWorkspaceView === 'results') showQueryResultsTab();
-                else if (queryWorkspaceView === 'sql') showQuerySqlTab();
+                if (queryWorkspaceViewBeforeDisplay) showQueryWorkspaceView(queryWorkspaceViewBeforeDisplay);
                 else showQueryDesignTab();
+                queryWorkspaceViewBeforeDisplay = null;
+            } else if (activeWorkspaceTab === 'query-design' && queryWorkspaceViewBeforeDisplay) {
+                showQueryWorkspaceView(queryWorkspaceViewBeforeDisplay);
+                queryWorkspaceViewBeforeDisplay = null;
             } else if (appState.tables[activeWorkspaceTab]) {
                 showTableTab(activeWorkspaceTab);
             }
             applyRibbonMode();
             scheduleProjectStatePersistence();
+        }
+
+        function showQueryWorkspaceView(view) {
+            if (view === 'results') showQueryResultsTab();
+            else if (view === 'sql') showQuerySqlTab();
+            else showQueryDesignTab();
         }
 
         function showAboutTab() {
@@ -479,11 +490,9 @@
                 openTableTabs,
                 activeWorkspaceTab,
                 queryWorkspaceView,
+                queryWorkspaceViewBeforeDisplay,
                 ribbonMode,
-                tableDataRevision,
-                lastQueryResults,
-                lastQueryResultColumns,
-                lastQueryResultCacheId
+                tableDataRevision
             };
             return writeProjectState(snapshot)
                 .then(() => {
@@ -543,17 +552,19 @@
                     openTableTabs = Array.isArray(snapshot.openTableTabs) ? snapshot.openTableTabs : [];
                     activeWorkspaceTab = snapshot.activeWorkspaceTab || 'query-design';
                     queryWorkspaceView = ['results', 'sql'].includes(snapshot.queryWorkspaceView) ? snapshot.queryWorkspaceView : 'design';
+                    queryWorkspaceViewBeforeDisplay = ['design', 'results', 'sql'].includes(snapshot.queryWorkspaceViewBeforeDisplay)
+                        ? snapshot.queryWorkspaceViewBeforeDisplay
+                        : null;
                     ribbonMode = snapshot.ribbonMode === 'advanced' ? 'advanced' : 'display';
                     tableDataRevision = Number.isInteger(snapshot.tableDataRevision) ? snapshot.tableDataRevision : 0;
-                    lastQueryResults = Array.isArray(snapshot.lastQueryResults) ? snapshot.lastQueryResults : [];
-                    lastQueryResultColumns = Array.isArray(snapshot.lastQueryResultColumns) ? snapshot.lastQueryResultColumns : [];
-                    lastQueryResultCacheId = typeof snapshot.lastQueryResultCacheId === 'string'
-                        ? snapshot.lastQueryResultCacheId
-                        : null;
+                    lastQueryResults = [];
+                    lastQueryResultColumns = [];
+                    lastQueryResultCacheId = null;
                     document.getElementById('currentProjectTitle').textContent = appState.fileName;
                     if (appState.queryGridRows.length === 0) initQueryGrid();
                     else renderQueryGrid();
                     refreshNavigationPane();
+                    updateSavedQueryHighlights();
                     renderCanvasTables();
                     renderSvgJoins();
                     updateActionButtonsState();
@@ -716,7 +727,11 @@
             });
             document.querySelectorAll('#sheetQueryList [data-sheet-query-index]').forEach(row => {
                 const query = sheetQueries[Number(row.dataset.sheetQueryIndex)];
-                const isActive = query === activeSheetQuery;
+                const isActive = Boolean(
+                    activeSheetQuery
+                    && query.name === activeSheetQuery.name
+                    && query.sql === activeSheetQuery.sql
+                );
                 row.classList.toggle('bg-red-50', isActive);
                 row.classList.toggle('text-red-800', isActive);
                 row.classList.toggle('hover:bg-gray-100', !isActive);
@@ -1620,6 +1635,7 @@
 
             activeQueryId = null;
             activeSheetQuery = query;
+            if (ribbonMode === 'display') queryWorkspaceViewBeforeDisplay = null;
             isNewQueryDraft = false;
             activeSqlText = query.sql;
             appState.queryWherePreview = parsed.queryWherePreview;
@@ -1968,6 +1984,7 @@
             if (getQueryDefinition() !== savedQueryDefinition && !confirm('Les modifications non enregistrées seront perdues. Continuer ?')) return false;
 
             activeSheetQuery = null;
+            if (ribbonMode === 'display') queryWorkspaceViewBeforeDisplay = null;
             appState.canvasTables = query.canvasTables || [];
             appState.joins = query.joins || [];
             appState.queryGridRows = query.queryGridRows || [];
@@ -4207,24 +4224,32 @@
 
         // ===== Execution et affichage des resultats =====
         function updateQueryDesignTabLabel() {
-            const queryTab = document.getElementById('queryDesignTab');
-            if (!queryTab) return;
+            const queryButton = document.getElementById('queryDesignViewButton');
+            if (!queryButton) return;
             const activeQuery = savedQueries.find(query => query.id === activeQueryId) || activeSheetQuery;
-            const label = activeQuery ? activeQuery.name : 'Conception de requête';
-            queryTab.innerHTML = '<i class="fa-solid fa-diagram-project mr-1"></i>';
-            queryTab.appendChild(document.createTextNode(label));
+            queryButton.replaceChildren();
+            const icon = document.createElement('i');
+            icon.className = 'fa-solid fa-diagram-project mr-1';
+            queryButton.append(icon, document.createTextNode('Vue requête'));
             if (activeQuery) {
                 const closeButton = document.createElement('span');
                 closeButton.className = 'ml-2 cursor-pointer text-gray-500 hover:text-red-700';
                 closeButton.title = 'Fermer la requête';
                 closeButton.setAttribute('role', 'button');
                 closeButton.setAttribute('aria-label', `Fermer ${activeQuery.name}`);
+                closeButton.setAttribute('tabindex', '0');
                 closeButton.innerHTML = '<i class="fa-solid fa-xmark"></i>';
                 closeButton.addEventListener('click', event => {
                     event.stopPropagation();
                     closeQueryDesignTab();
                 });
-                queryTab.appendChild(closeButton);
+                closeButton.addEventListener('keydown', event => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    closeQueryDesignTab();
+                });
+                queryButton.appendChild(closeButton);
             }
         }
 
@@ -4277,14 +4302,6 @@
                 tabsContainer.appendChild(tab);
             });
 
-            const queryTab = document.getElementById('queryDesignTab');
-            const isQueryTabActive = activeWorkspaceTab === 'query-design';
-            queryTab.setAttribute('aria-selected', isQueryTabActive ? 'true' : 'false');
-            queryTab.className = ribbonMode === 'display'
-                ? 'hidden'
-                : isQueryTabActive
-                ? 'border border-b-0 border-[#c8c6c4] bg-white px-3 py-1.5 text-xs font-semibold text-red-700'
-                : 'border border-transparent px-3 py-1.5 text-xs text-gray-700 hover:bg-white';
             const queryViewButtons = document.getElementById('queryViewButtons');
             const hasActiveQuery = Boolean(savedQueries.some(query => query.id === activeQueryId) || activeSheetQuery);
             queryViewButtons.classList.toggle('hidden',
@@ -4391,9 +4408,15 @@
             activeQueryId = null;
             activeSheetQuery = null;
             isNewQueryDraft = true;
+            queryWorkspaceViewBeforeDisplay = null;
+            lastQueryResults = [];
+            lastQueryResultColumns = [];
+            lastQueryResultCacheId = null;
+            queryResultsWorkspaceCacheId = null;
             savedQueryDefinition = getQueryDefinition();
             updateQueryDesignTabLabel();
             updateSavedQueryHighlights();
+            updateActionButtonsState();
             updateSaveButtonState();
             const sheetQueryStatus = document.getElementById('sheetQueryStatus');
             sheetQueryStatus.classList.remove('text-red-700');
@@ -4456,6 +4479,7 @@
                 ? beginWorkspaceTransition('Chargement de la table...')
                 : null;
             activeWorkspaceTab = tableName;
+            scheduleProjectStatePersistence();
             document.getElementById('displayHomeWorkspace').classList.add('hidden');
             document.getElementById('erdCanvas').classList.add('hidden');
             document.getElementById('queryGridPanel').classList.add('hidden');
@@ -5021,7 +5045,6 @@
             lastQueryResults = tableRows;
             lastQueryResultColumns = columns;
             lastQueryResultCacheId = null;
-            persistProjectState();
             updateActionButtonsState();
 
             const container = document.getElementById('tableWorkspaceContainer');
