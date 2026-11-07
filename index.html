@@ -29,13 +29,36 @@
 
     <!-- Ruban MS Access (Ribbon) -->
     <div class="access-ribbon flex flex-col select-none">
-        <div id="tab-create" class="flex items-center px-3 py-2 space-x-4 bg-white">
+        <div class="flex items-center gap-1 border-b border-[#c8c6c4] bg-[#f3f2f1] px-3 pt-1" role="tablist" aria-label="Mode du ruban">
+            <button id="ribbonDisplayTab" type="button" role="tab" aria-selected="true" aria-controls="tab-display" onclick="switchRibbonMode('display')" class="border border-b-0 border-[#c8c6c4] bg-white px-3 py-1.5 font-semibold text-red-700">Affichage</button>
+            <button id="ribbonAdvancedTab" type="button" role="tab" aria-selected="false" aria-controls="tab-advanced" onclick="switchRibbonMode('advanced')" class="border border-transparent px-3 py-1.5 text-gray-700 hover:bg-white">Avancé</button>
+        </div>
+        <div id="tab-display" class="flex items-center px-3 py-2 space-x-4 bg-white" role="tabpanel" aria-labelledby="ribbonDisplayTab">
             <div class="flex flex-col items-center border-r pr-4 border-gray-200">
-                <label id="addXmlButton" for="xmlFileInput" class="flex w-full flex-col items-center justify-center text-center hover:bg-gray-100 p-1.5 rounded text-gray-700 cursor-pointer">
+                <label for="xmlFileInput" class="flex w-full flex-col items-center justify-center text-center hover:bg-gray-100 p-1.5 rounded text-gray-700 cursor-pointer">
                     <i class="fa-solid fa-folder-open text-xl text-amber-600 mb-1"></i>
                     <span>Ajouter XML</span>
                 </label>
-                <input type="file" id="xmlFileInput" accept=".xml,text/xml,application/xml" multiple class="sr-only" aria-label="Sélectionner des fichiers XML" onchange="handleFileSelect(event)">
+            </div>
+            <div class="flex flex-col items-center border-r pr-4 border-gray-200">
+                <button type="button" onclick="clearAppCacheAndFields()" title="Effacer les tables importées, les champs, les requêtes sauvegardées et le brouillon local" class="flex flex-col items-center hover:bg-red-50 p-1.5 rounded text-gray-700">
+                    <i class="fa-solid fa-broom text-xl text-red-700 mb-1"></i>
+                    <span>Vider cache et champs</span>
+                </button>
+            </div>
+            <div class="flex flex-col items-center">
+                <button id="displayExportButton" type="button" onclick="exportCurrentContextToExcel()" class="flex flex-col items-center bg-emerald-700 hover:bg-emerald-800 text-white p-1.5 rounded font-semibold shadow-sm disabled:opacity-60 disabled:cursor-not-allowed">
+                    <i class="fa-solid fa-file-excel text-xl mb-1"></i>
+                    <span>Exporter Excel</span>
+                </button>
+            </div>
+        </div>
+        <div id="tab-advanced" class="hidden items-center px-3 py-2 space-x-4 bg-white" role="tabpanel" aria-labelledby="ribbonAdvancedTab">
+            <div class="flex flex-col items-center border-r pr-4 border-gray-200">
+                <label for="xmlFileInput" class="flex w-full flex-col items-center justify-center text-center hover:bg-gray-100 p-1.5 rounded text-gray-700 cursor-pointer">
+                    <i class="fa-solid fa-folder-open text-xl text-amber-600 mb-1"></i>
+                    <span>Ajouter XML</span>
+                </label>
             </div>
             <div class="flex flex-col items-center border-r pr-4 border-gray-200">
                 <button type="button" onclick="clearAppCacheAndFields()" title="Effacer les tables importées, les champs, les requêtes sauvegardées et le brouillon local" class="flex flex-col items-center hover:bg-red-50 p-1.5 rounded text-gray-700">
@@ -74,6 +97,7 @@
                 </button>
             </div>
         </div>
+        <input type="file" id="xmlFileInput" accept=".xml,text/xml,application/xml" multiple class="sr-only" aria-label="Sélectionner des fichiers XML" onchange="handleFileSelect(event)">
     </div>
 
     <!-- Corps principal style Access (Navigation pane à gauche, Concepteur au centre) -->
@@ -193,6 +217,9 @@
                     <span id="querySqlWorkspaceTitle" class="font-semibold text-gray-100">SQL : Requête</span>
                 </div>
                 <pre id="querySqlWorkspaceText" class="flex-1 min-h-0 overflow-auto whitespace-pre-wrap p-4 font-mono text-sm text-gray-100"></pre>
+            </div>
+            <div id="displayHomeWorkspace" class="hidden flex-1 items-center justify-center bg-[#f9f9f9] text-gray-500" role="status">
+                Sélectionnez une table ou double-cliquez sur une requête pour afficher ses résultats.
             </div>
 
             <div id="workspaceTransitionOverlay" class="absolute inset-0 z-[45] hidden items-center justify-center bg-white/70" role="status" aria-live="polite">
@@ -414,7 +441,7 @@
     </div>
 
     <script src="js/compatibility.js"></script>
-    <script src="js/app.js?cache=bigsi-xml-v39"></script>
+    <script src="js/app.js?cache=bigsi-xml-v42"></script>
     <script>
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function () {
