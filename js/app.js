@@ -39,7 +39,7 @@
         const PROJECT_STORAGE_KEY = 'xml2data.projectState';
         const QUERY_DRAFT_KEY = 'xml2data.queryDraft';
         const LOCAL_DATABASE_NAME = 'BigSi_XML';
-        const LOCAL_DATABASE_VERSION = 2;
+        const LOCAL_DATABASE_VERSION = 3;
         const PROJECT_STATE_ID = 'current';
         const QUERY_SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/1lTZqnON6cHFABqoQuNamg7l2ecwqi7A6QsHO1VnErWw/export?format=csv';
         let localDatabasePromise = null;
@@ -86,6 +86,7 @@
         window.addEventListener('DOMContentLoaded', async () => {
             initQueryGrid();
             await loadSavedQueries();
+            await loadCachedSheetQueries();
             await restoreProjectState();
             savedQueryDefinition = getQueryDefinition();
             restoreQueryDraft();
@@ -244,6 +245,9 @@
                         if (!database.objectStoreNames.contains('queryResults')) {
                             database.createObjectStore('queryResults', { keyPath: 'id' });
                         }
+                        if (!database.objectStoreNames.contains('sharedQueries')) {
+                            database.createObjectStore('sharedQueries', { keyPath: 'id' });
+                        }
                     };
                     request.onsuccess = () => {
                         const database = request.result;
@@ -334,12 +338,25 @@
             }));
         }
 
+        function replaceSharedQueriesInDatabase(queries) {
+            return openLocalDatabase().then(database => new Promise((resolve, reject) => {
+                const transaction = database.transaction('sharedQueries', 'readwrite');
+                const store = transaction.objectStore('sharedQueries');
+                store.clear();
+                queries.forEach((query, index) => store.put({ ...query, id: String(index).padStart(8, '0') }));
+                transaction.oncomplete = () => resolve();
+                transaction.onerror = () => reject(transaction.error || new Error('Écriture des requêtes partagées dans IndexedDB échouée.'));
+                transaction.onabort = () => reject(transaction.error || new Error('Écriture des requêtes partagées dans IndexedDB annulée.'));
+            }));
+        }
+
         function clearLocalDatabase() {
             return openLocalDatabase().then(database => new Promise((resolve, reject) => {
-                const transaction = database.transaction(['projectState', 'savedQueries', 'queryResults'], 'readwrite');
+                const transaction = database.transaction(['projectState', 'savedQueries', 'queryResults', 'sharedQueries'], 'readwrite');
                 transaction.objectStore('projectState').clear();
                 transaction.objectStore('savedQueries').clear();
                 transaction.objectStore('queryResults').clear();
+                transaction.objectStore('sharedQueries').clear();
                 transaction.oncomplete = () => resolve();
                 transaction.onerror = () => reject(transaction.error || new Error('Suppression IndexedDB échouée.'));
                 transaction.onabort = () => reject(transaction.error || new Error('Suppression IndexedDB annulée.'));
@@ -377,6 +394,7 @@
                 queryWherePreview: appState.queryWherePreview,
                 queryWhereExpression: appState.queryWhereExpression,
                 activeQueryId,
+                activeSheetQuery,
                 activeSqlText,
                 openTableTabs,
                 activeWorkspaceTab,
@@ -437,6 +455,9 @@
                     appState.queryWherePreview = snapshot.queryWherePreview || '';
                     appState.queryWhereExpression = snapshot.queryWhereExpression || null;
                     activeQueryId = snapshot.activeQueryId || null;
+                    activeSheetQuery = snapshot.activeSheetQuery && typeof snapshot.activeSheetQuery.sql === 'string'
+                        ? snapshot.activeSheetQuery
+                        : null;
                     activeSqlText = typeof snapshot.activeSqlText === 'string' ? snapshot.activeSqlText : null;
                     openTableTabs = Array.isArray(snapshot.openTableTabs) ? snapshot.openTableTabs : [];
                     activeWorkspaceTab = snapshot.activeWorkspaceTab || 'query-design';
@@ -541,7 +562,9 @@
             if (sheetQueries.length === 0) {
                 const emptySheetList = document.createElement('div');
                 emptySheetList.className = 'text-gray-400 text-center py-2 italic';
-                emptySheetList.textContent = sheetQueriesLoaded ? 'Aucune requête dans la feuille.' : 'Aucune requête partagée chargée.';
+                emptySheetList.textContent = sheetQueriesLoaded
+                    ? 'Aucune requête dans la feuille.'
+                    : 'Aucune requête partagée en cache. Cliquez sur Actualiser.';
                 sheetList.appendChild(emptySheetList);
             }
 
@@ -609,6 +632,25 @@
             });
         }
 
+        async function loadCachedSheetQueries() {
+            try {
+                const cachedQueries = await readLocalStore('sharedQueries', 'getAll');
+                sheetQueries = cachedQueries
+                    .map(({ id, ...query }) => query)
+                    .filter(query => query.name && query.sql);
+                sheetQueriesLoaded = sheetQueries.length > 0;
+                const status = document.getElementById('sheetQueryStatus');
+                status.textContent = sheetQueriesLoaded
+                    ? `${sheetQueries.length} requête(s) chargée(s) depuis le stockage local. Cliquez sur Actualiser pour vérifier les mises à jour.`
+                    : 'Cliquez sur Actualiser pour charger les requêtes partagées.';
+                renderSavedQueries();
+            } catch (error) {
+                console.error('Impossible de charger les requêtes partagées depuis IndexedDB :', error);
+                document.getElementById('sheetQueryStatus').textContent =
+                    `Impossible de charger les requêtes partagées enregistrées : ${error.message || String(error)}`;
+            }
+        }
+
         async function loadSheetQueries() {
             const status = document.getElementById('sheetQueryStatus');
             const refreshButton = document.querySelector('#navQueriesPanel button[onclick="loadSheetQueries()"]');
@@ -634,7 +676,7 @@
                     throw new Error('Colonnes attendues introuvables : nom_requete, groupe, requete.');
                 }
 
-                sheetQueries = records.slice(1)
+                const refreshedQueries = records.slice(1)
                     .filter(record => record.some(value => value.trim()))
                     .map(record => ({
                         name: (record[nameIndex] || '').trim(),
@@ -642,8 +684,10 @@
                         sql: (record[sqlIndex] || '').trim()
                     }))
                     .filter(query => query.name && query.sql);
+                await replaceSharedQueriesInDatabase(refreshedQueries);
+                sheetQueries = refreshedQueries;
                 sheetQueriesLoaded = true;
-                status.textContent = `${sheetQueries.length} requête(s) chargée(s). Survolez un nom pour afficher sa description.`;
+                status.textContent = `${sheetQueries.length} requête(s) actualisée(s) et enregistrée(s) localement.`;
                 renderSavedQueries();
             } catch (error) {
                 console.error('Échec du chargement des requêtes Google Sheets :', error);
@@ -2410,7 +2454,6 @@
             document.getElementById('queriesTab').className = showTables
                 ? 'flex-1 px-3 py-1.5 text-gray-700 border-b-2 border-transparent hover:bg-white'
                 : 'flex-1 px-3 py-1.5 font-semibold text-red-700 border-b-2 border-red-700 bg-white';
-            if (!showTables && !sheetQueriesLoaded) loadSheetQueries();
         }
 
         let draggedNavigationTable = null;
@@ -2746,7 +2789,7 @@
         }
 
         async function clearAppCacheAndFields() {
-            if (!confirm('Effacer les tables XML importées, les champs et critères de la requête, toutes les requêtes sauvegardées localement et le brouillon ? Cette action est irréversible.')) return;
+            if (!confirm('Effacer les tables XML importées, les champs et critères de la requête, toutes les requêtes locales et partagées mises en cache, ainsi que le brouillon ? Cette action est irréversible.')) return;
 
             try {
                 await clearLocalDatabase();
@@ -2760,6 +2803,10 @@
             }
 
             savedQueries = [];
+            sheetQueries = [];
+            sheetQueriesLoaded = false;
+            document.getElementById('sheetQueryStatus').textContent =
+                'Cache partagé vidé. Cliquez sur Actualiser pour charger les requêtes partagées.';
             pendingRenameQueryId = null;
             pendingSaveAsNewFromSheetName = null;
             closeQueryNameModal();
