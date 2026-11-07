@@ -820,40 +820,193 @@
                 return { ...field, criterion: operand };
             };
 
-            const conditions = whereText ? splitSqlTopLevel(whereText, 'AND') : [];
-            conditions.forEach((condition, conditionIndex) => {
-                const alternatives = splitSqlTopLevel(stripOuterSqlParentheses(condition), 'OR').map(parseCondition);
-                const hasDifferentFields = alternatives.some(item =>
-                    item.table !== alternatives[0].table || item.field !== alternatives[0].field
-                );
-                const orGroup = hasDifferentFields ? `where-or-${conditionIndex}` : null;
-                alternatives.forEach(field => {
-                    let row = queryRows.find(item =>
-                        item.table === field.table
-                        && item.field === field.field
-                        && (item.criteriaOrGroup || null) === orGroup
-                        && (orGroup || (!item.criteria && !item.or))
-                    );
-                    if (!row) {
-                        row = {
-                            ...field,
-                            alias: '',
-                            expression: `${field.table}.${field.field}`,
-                            total: '',
-                            show: false,
-                            sort: '',
-                            criteria: '',
-                            or: '',
-                            ...(orGroup ? { criteriaOrGroup: orGroup } : {}),
-                            width: 180
-                        };
-                        queryRows.push(row);
+            const parseWhereExpression = expression => {
+                const tokens = [];
+                let index = 0;
+                while (index < expression.length) {
+                    if (/\s/.test(expression[index])) {
+                        index++;
+                        continue;
                     }
-                    row.criteria = row.criteria
-                        ? `${row.criteria} OR ${field.criterion}`
-                        : field.criterion;
+                    if (expression[index] === '[') {
+                        const identifier = readSqlIdentifier(expression, index);
+                        tokens.push({ type: 'identifier', value: identifier.value });
+                        index = identifier.end;
+                        continue;
+                    }
+                    if (expression[index] === '"' || expression[index] === "'") {
+                        const quote = expression[index];
+                        let value = '';
+                        index++;
+                        let closed = false;
+                        while (index < expression.length) {
+                            if (expression[index] === quote && expression[index + 1] === quote) {
+                                value += quote;
+                                index += 2;
+                            } else if (expression[index] === quote) {
+                                index++;
+                                closed = true;
+                                break;
+                            } else {
+                                value += expression[index++];
+                            }
+                        }
+                        if (!closed) throw new Error('Une chaîne de la clause WHERE n’est pas terminée.');
+                        tokens.push({ type: 'literal', value });
+                        continue;
+                    }
+                    const number = expression.slice(index).match(/^\d+(?:\.\d+)?/);
+                    if (number) {
+                        tokens.push({ type: 'literal', value: Number(number[0]) });
+                        index += number[0].length;
+                        continue;
+                    }
+                    const identifier = expression.slice(index).match(/^[A-Za-z_][\w$]*/);
+                    if (identifier) {
+                        tokens.push({ type: 'identifier', value: identifier[0] });
+                        index += identifier[0].length;
+                        continue;
+                    }
+                    const operator = expression.slice(index).match(/^(?:<>|!=|<=|>=|[=<>])/);
+                    if (operator) {
+                        tokens.push({ type: 'operator', value: operator[0] });
+                        index += operator[0].length;
+                        continue;
+                    }
+                    if ('().,'.includes(expression[index])) {
+                        tokens.push({ type: expression[index], value: expression[index] });
+                        index++;
+                        continue;
+                    }
+                    throw new Error(`Clause WHERE non prise en charge près de « ${expression.slice(index, index + 20)} ».`);
+                }
+
+                let position = 0;
+                const isKeyword = keyword => tokens[position]
+                    && tokens[position].type === 'identifier'
+                    && tokens[position].value.toUpperCase() === keyword;
+                const expect = type => {
+                    if (!tokens[position] || tokens[position].type !== type) {
+                        throw new Error(`Clause WHERE invalide : « ${type} » attendu.`);
+                    }
+                    return tokens[position++];
+                };
+                const parseValue = () => {
+                    const token = tokens[position];
+                    if (!token) throw new Error('Valeur attendue dans la clause WHERE.');
+                    if (token.type === 'literal') {
+                        position++;
+                        return { type: 'literal', value: token.value };
+                    }
+                    if (token.type !== 'identifier') throw new Error('Champ ou valeur attendu dans la clause WHERE.');
+                    if (isKeyword('TRIM') || isKeyword('NZ')) {
+                        const functionName = token.value.toUpperCase();
+                        position++;
+                        expect('(');
+                        const value = parseValue();
+                        if (functionName === 'NZ') {
+                            expect(',');
+                            const fallback = parseValue();
+                            expect(')');
+                            return { type: 'nz', value, fallback };
+                        }
+                        expect(')');
+                        return { type: 'trim', value };
+                    }
+                    const first = token.value;
+                    position++;
+                    if (first.toUpperCase() === 'TRUE' || first.toUpperCase() === 'FALSE') {
+                        return { type: 'literal', value: first.toUpperCase() === 'TRUE' };
+                    }
+                    if (first.toUpperCase() === 'NULL') return { type: 'literal', value: null };
+                    const reference = { table: '', field: first };
+                    if (tokens[position] && tokens[position].type === '.') {
+                        position++;
+                        const second = expect('identifier');
+                        reference.table = first;
+                        reference.field = second.value;
+                    }
+                    return { type: 'field', ...resolveReference(reference) };
+                };
+                const parsePredicate = () => {
+                    if (tokens[position] && tokens[position].type === '(') {
+                        position++;
+                        const nested = parseOr();
+                        expect(')');
+                        return nested;
+                    }
+                    const left = parseValue();
+                    const operator = expect('operator').value;
+                    const right = parseValue();
+                    return { type: 'compare', operator: operator === '!=' ? '<>' : operator, left, right };
+                };
+                const parseAnd = () => {
+                    let expressionNode = parsePredicate();
+                    while (isKeyword('AND')) {
+                        position++;
+                        expressionNode = { type: 'and', left: expressionNode, right: parsePredicate() };
+                    }
+                    return expressionNode;
+                };
+                const parseOr = () => {
+                    let expressionNode = parseAnd();
+                    while (isKeyword('OR')) {
+                        position++;
+                        expressionNode = { type: 'or', left: expressionNode, right: parseAnd() };
+                    }
+                    return expressionNode;
+                };
+                const result = parseOr();
+                if (position !== tokens.length) throw new Error('Clause WHERE invalide ou non prise en charge.');
+                return result;
+            };
+
+            const hasMixedAndOr = /\bAND\b/i.test(whereText) && /\bOR\b/i.test(whereText);
+            const hasWhereFunctions = /\b(?:TRIM|NZ)\s*\(/i.test(whereText);
+            let whereExpression = null;
+            if (whereText) {
+                try {
+                    whereExpression = parseWhereExpression(whereText);
+                } catch (error) {
+                    if (hasMixedAndOr || hasWhereFunctions) throw error;
+                }
+            }
+            const conditions = whereText ? splitSqlTopLevel(whereText, 'AND') : [];
+            if (!hasMixedAndOr && !hasWhereFunctions) {
+                conditions.forEach((condition, conditionIndex) => {
+                    const alternatives = splitSqlTopLevel(stripOuterSqlParentheses(condition), 'OR').map(parseCondition);
+                    const hasDifferentFields = alternatives.some(item =>
+                        item.table !== alternatives[0].table || item.field !== alternatives[0].field
+                    );
+                    const orGroup = hasDifferentFields ? `where-or-${conditionIndex}` : null;
+                    alternatives.forEach(field => {
+                        let row = queryRows.find(item =>
+                            item.table === field.table
+                            && item.field === field.field
+                            && (item.criteriaOrGroup || null) === orGroup
+                            && (orGroup || (!item.criteria && !item.or))
+                        );
+                        if (!row) {
+                            row = {
+                                ...field,
+                                alias: '',
+                                expression: `${field.table}.${field.field}`,
+                                total: '',
+                                show: false,
+                                sort: '',
+                                criteria: '',
+                                or: '',
+                                ...(orGroup ? { criteriaOrGroup: orGroup } : {}),
+                                width: 180
+                            };
+                            queryRows.push(row);
+                        }
+                        row.criteria = row.criteria
+                            ? `${row.criteria} OR ${field.criterion}`
+                            : field.criterion;
+                    });
                 });
-            });
+            }
 
             if (groupText) {
                 splitSqlTopLevel(groupText, ',').forEach(groupField => {
@@ -903,7 +1056,7 @@
                 width: 220,
                 height: 220
             }));
-            return { primaryTable, tables, canvasTables, joins, queryGridRows: queryRows };
+            return { primaryTable, tables, canvasTables, joins, queryGridRows: queryRows, whereExpression };
         }
 
         function isAdvancedAccessSql(sqlText) {
@@ -3118,6 +3271,48 @@
             return evaluate(expression);
         }
 
+        function evaluateSqlWhereExpression(expression, row) {
+            const evaluate = node => {
+                if (node.type === 'literal') return node.value;
+                if (node.type === 'field') {
+                    const key = node.table ? `${node.table}.${node.field}` : node.field;
+                    return row[key] !== undefined ? row[key] : row[node.field];
+                }
+                if (node.type === 'trim') {
+                    const value = evaluate(node.value);
+                    return value === null || value === undefined ? '' : String(value).trim();
+                }
+                if (node.type === 'nz') {
+                    const value = evaluate(node.value);
+                    return value === null || value === undefined ? evaluate(node.fallback) : value;
+                }
+                if (node.type === 'and') return Boolean(evaluate(node.left)) && Boolean(evaluate(node.right));
+                if (node.type === 'or') return Boolean(evaluate(node.left)) || Boolean(evaluate(node.right));
+                if (node.type === 'compare') {
+                    const leftValue = evaluate(node.left);
+                    const rightValue = evaluate(node.right);
+                    if (leftValue === null || leftValue === undefined || rightValue === null || rightValue === undefined) return false;
+                    const numericLeft = Number(leftValue);
+                    const numericRight = Number(rightValue);
+                    const numeric = leftValue !== '' && rightValue !== ''
+                        && !Number.isNaN(numericLeft) && !Number.isNaN(numericRight);
+                    const left = numeric ? numericLeft : String(leftValue).trim().toLowerCase();
+                    const right = numeric ? numericRight : String(rightValue).trim().toLowerCase();
+                    switch (node.operator) {
+                        case '=': return left === right;
+                        case '<>': return left !== right;
+                        case '>': return left > right;
+                        case '<': return left < right;
+                        case '>=': return left >= right;
+                        case '<=': return left <= right;
+                        default: throw new Error(`Opérateur WHERE non pris en charge : ${node.operator}.`);
+                    }
+                }
+                throw new Error('Expression WHERE invalide.');
+            };
+            return Boolean(evaluate(expression));
+        }
+
         function splitSqlList(value) {
             const items = [];
             let current = '';
@@ -3963,9 +4158,10 @@
         // Exécuter et afficher les résultats de la requête (Datasheet View)
         function runQueryPreview() {
             if (activeQueryWorker) return;
+            let whereExpression = null;
             if (activeSqlText) {
                 try {
-                    parseSheetQuerySql(activeSqlText);
+                    whereExpression = parseSheetQuerySql(activeSqlText).whereExpression;
                 } catch (error) {
                     showQueryExecutionError(`Cette requête SQL ne peut pas être exécutée : ${error.message}`);
                     return;
@@ -4003,6 +4199,7 @@
                     const normalizeMultipleExclusions = ${normalizeMultipleExclusions.toString()};
                     const matchesCriterion = ${matchesCriterion.toString()};
                     const evaluateCalculatedExpression = ${evaluateCalculatedExpression.toString()};
+                    const evaluateSqlWhereExpression = ${evaluateSqlWhereExpression.toString()};
                     const executeQueryEngine = ${executeQueryEngine.toString()};
                     self.onmessage = event => {
                         if (event.data.type !== 'execute') return;
@@ -4061,7 +4258,8 @@
                         tables: appState.tables,
                         joins: appState.joins,
                         queryGridRows: appState.queryGridRows,
-                        canvasTables: appState.canvasTables
+                        canvasTables: appState.canvasTables,
+                        whereExpression
                     }
                 });
             }, 0);
@@ -4297,21 +4495,25 @@
                 });
             });
 
-            // Appliquer les groupes de critères, avec OR dans chaque groupe SQL.
-            const criteriaGroups = new Map();
-            appState.queryGridRows.forEach((qRow, index) => {
-                if (!qRow.field || !(qRow.criteria || qRow.or)) return;
-                const groupKey = qRow.criteriaOrGroup || `and-${index}`;
-                const group = criteriaGroups.get(groupKey);
-                if (group) group.push(qRow);
-                else criteriaGroups.set(groupKey, [qRow]);
-            });
-            rows = rows.filter(row => Array.from(criteriaGroups.values()).every(group => group.some(qRow => {
-                const fieldKey = qRow.table ? `${qRow.table}.${qRow.field}` : qRow.field;
-                const val = row[fieldKey] !== undefined ? row[fieldKey] : row[qRow.field];
-                const criteria = [qRow.criteria, qRow.or].filter(Boolean);
-                return criteria.some(criterion => matchesCriterion(val, criterion.trim()));
-            })));
+            if (appState.whereExpression) {
+                rows = rows.filter(row => evaluateSqlWhereExpression(appState.whereExpression, row));
+            } else {
+                // Appliquer les groupes de critères, avec OR dans chaque groupe SQL.
+                const criteriaGroups = new Map();
+                appState.queryGridRows.forEach((qRow, index) => {
+                    if (!qRow.field || !(qRow.criteria || qRow.or)) return;
+                    const groupKey = qRow.criteriaOrGroup || `and-${index}`;
+                    const group = criteriaGroups.get(groupKey);
+                    if (group) group.push(qRow);
+                    else criteriaGroups.set(groupKey, [qRow]);
+                });
+                rows = rows.filter(row => Array.from(criteriaGroups.values()).every(group => group.some(qRow => {
+                    const fieldKey = qRow.table ? `${qRow.table}.${qRow.field}` : qRow.field;
+                    const val = row[fieldKey] !== undefined ? row[fieldKey] : row[qRow.field];
+                    const criteria = [qRow.criteria, qRow.or].filter(Boolean);
+                    return criteria.some(criterion => matchesCriterion(val, criterion.trim()));
+                })));
+            }
 
             // Appliquer les tris (sort)
             appState.queryGridRows.forEach(qRow => {
