@@ -68,6 +68,7 @@
         let activeWorkspaceTab = 'query-design';
         let queryWorkspaceView = 'design';
         let ribbonMode = 'display';
+        let activeRibbonTab = 'display';
         let queryResultsWorkspaceCacheId = null;
         let workspaceTransitionToken = 0;
         let activeWorkspaceTransitionToken = 0;
@@ -89,6 +90,7 @@
             await loadSavedQueries();
             await loadCachedSheetQueries();
             await restoreProjectState();
+            activeRibbonTab = ribbonMode;
             savedQueryDefinition = getQueryDefinition();
             restoreQueryDraft();
             if (ribbonMode === 'display' && activeWorkspaceTab === 'query-design' && queryWorkspaceView === 'design') {
@@ -148,6 +150,7 @@
         function switchRibbonMode(mode) {
             if (mode !== 'display' && mode !== 'advanced') return;
             ribbonMode = mode;
+            activeRibbonTab = mode;
             if (ribbonMode === 'display') {
                 tableSelectionMode = false;
                 selectedTableNames.clear();
@@ -172,24 +175,43 @@
             scheduleProjectStatePersistence();
         }
 
+        function showAboutTab() {
+            activeRibbonTab = 'about';
+            applyRibbonMode();
+        }
+
         function applyRibbonMode() {
-            const isDisplay = ribbonMode === 'display';
+            const isDisplay = activeRibbonTab === 'display';
+            const isAdvanced = activeRibbonTab === 'advanced';
             const displayTab = document.getElementById('ribbonDisplayTab');
             const advancedTab = document.getElementById('ribbonAdvancedTab');
+            const aboutTab = document.getElementById('ribbonAboutTab');
             const displayRibbon = document.getElementById('tab-display');
             const advancedRibbon = document.getElementById('tab-advanced');
+            const aboutRibbon = document.getElementById('tab-about');
+            const accessRibbon = document.querySelector('.access-ribbon');
+            const aboutIsActive = activeRibbonTab === 'about';
             displayTab.setAttribute('aria-selected', String(isDisplay));
-            advancedTab.setAttribute('aria-selected', String(!isDisplay));
+            advancedTab.setAttribute('aria-selected', String(isAdvanced));
+            aboutTab.setAttribute('aria-selected', String(activeRibbonTab === 'about'));
             displayTab.className = isDisplay
                 ? 'border border-b-0 border-[#c8c6c4] bg-white px-3 py-1.5 font-semibold text-red-700'
                 : 'border border-transparent px-3 py-1.5 text-gray-700 hover:bg-white';
-            advancedTab.className = !isDisplay
+            advancedTab.className = isAdvanced
+                ? 'border border-b-0 border-[#c8c6c4] bg-white px-3 py-1.5 font-semibold text-red-700'
+                : 'border border-transparent px-3 py-1.5 text-gray-700 hover:bg-white';
+            aboutTab.className = activeRibbonTab === 'about'
                 ? 'border border-b-0 border-[#c8c6c4] bg-white px-3 py-1.5 font-semibold text-red-700'
                 : 'border border-transparent px-3 py-1.5 text-gray-700 hover:bg-white';
             displayRibbon.classList.toggle('hidden', !isDisplay);
             displayRibbon.classList.toggle('flex', isDisplay);
-            advancedRibbon.classList.toggle('hidden', isDisplay);
-            advancedRibbon.classList.toggle('flex', !isDisplay);
+            advancedRibbon.classList.toggle('hidden', !isAdvanced);
+            advancedRibbon.classList.toggle('flex', isAdvanced);
+            aboutRibbon.classList.toggle('hidden', !aboutIsActive);
+            accessRibbon.classList.toggle('flex-1', aboutIsActive);
+            accessRibbon.classList.toggle('min-h-0', aboutIsActive);
+            document.getElementById('appMainWorkspace').classList.toggle('hidden', aboutIsActive);
+            document.getElementById('appStatusBar').classList.toggle('hidden', aboutIsActive);
             renderWorkspaceTabs();
         }
 
@@ -586,6 +608,12 @@
                 groupList.className = 'hidden pb-1';
                 groupButton.addEventListener('click', () => {
                     const expanded = groupButton.getAttribute('aria-expanded') === 'true';
+                    sheetList.querySelectorAll('section > button[aria-expanded="true"]').forEach(openButton => {
+                        if (openButton === groupButton) return;
+                        openButton.setAttribute('aria-expanded', 'false');
+                        openButton.nextElementSibling.classList.add('hidden');
+                        openButton.querySelector('span i').className = 'fa-solid fa-chevron-right mr-2 text-[10px] text-gray-500';
+                    });
                     groupButton.setAttribute('aria-expanded', String(!expanded));
                     groupList.classList.toggle('hidden', expanded);
                     groupLabel.querySelector('i').className = `fa-solid ${expanded ? 'fa-chevron-right' : 'fa-chevron-down'} mr-2 text-[10px] text-gray-500`;
@@ -4356,6 +4384,23 @@
             } else {
                 requestAnimationFrame(() => requestAnimationFrame(() => finishWorkspaceTransition(transitionToken)));
             }
+        }
+
+        function closeQueryResultsTab() {
+            if (queryExecutionPending) cancelQueryExecution();
+            activeQueryId = null;
+            activeSheetQuery = null;
+            isNewQueryDraft = true;
+            savedQueryDefinition = getQueryDefinition();
+            updateQueryDesignTabLabel();
+            updateSavedQueryHighlights();
+            updateSaveButtonState();
+            const sheetQueryStatus = document.getElementById('sheetQueryStatus');
+            sheetQueryStatus.classList.remove('text-red-700');
+            sheetQueryStatus.textContent = 'Aucune requête sélectionnée.';
+            document.getElementById('statusBarMode').textContent = 'Aucune requête sélectionnée';
+            if (ribbonMode === 'display') showDisplayHomeTab();
+            else showQueryDesignTab();
         }
 
         function showQuerySqlTab() {
