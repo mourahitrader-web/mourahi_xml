@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bigsi-xml-v42';
+const CACHE_NAME = 'bigsi-xml-v43';
 const APP_SHELL = [
     './',
     './index.html',

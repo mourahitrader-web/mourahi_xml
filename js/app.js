@@ -4261,6 +4261,9 @@
             const hasActiveQuery = Boolean(savedQueries.some(query => query.id === activeQueryId) || activeSheetQuery);
             queryViewButtons.classList.toggle('hidden',
                 activeWorkspaceTab !== 'query-design' || (ribbonMode === 'display' && !hasActiveQuery));
+            const displayExportButton = document.getElementById('displayExportButton');
+            displayExportButton.classList.toggle('hidden',
+                ribbonMode !== 'display' || activeWorkspaceTab !== 'query-design' || queryWorkspaceView !== 'results');
             const isDesignView = queryWorkspaceView === 'design';
             const designButton = document.getElementById('queryDesignViewButton');
             const resultsButton = document.getElementById('queryResultsViewButton');
