@@ -4084,6 +4084,7 @@
         }
 
         function closeQueryDesignTab() {
+            if (queryWorkspaceView === 'results') showQueryDesignTab();
             startNewQuery();
         }
 
