@@ -31,6 +31,8 @@
             canvasTables: [],    // [ { name: "z_com", x: 50, y: 50, width: 220, height: 200 }, ... ]
             joins: [],           // [ { id, fromTable, fromField, toTable, toField, type: "INNER"|"LEFT"|"RIGHT" }, ... ]
             queryGridRows: [],   // Lignes de la grille de critères style Access (8 lignes)
+            queryWherePreview: '',
+            queryWhereExpression: null,
             activeJoinId: null   // ID de la liaison actuellement cliquée
         };
         const QUERY_STORAGE_KEY = 'xml2data.savedQueries';
@@ -113,6 +115,8 @@
                 canvasTables: appState.canvasTables,
                 joins: appState.joins,
                 queryGridRows: appState.queryGridRows,
+                queryWherePreview: appState.queryWherePreview,
+                queryWhereExpression: appState.queryWhereExpression,
                 sqlText: activeSqlText
             });
         }
@@ -984,6 +988,7 @@
 
             const hasMixedAndOr = /\bAND\b/i.test(whereText) && /\bOR\b/i.test(whereText);
             const hasWhereFunctions = /\b(?:TRIM|NZ)\s*\(/i.test(whereText);
+            const queryWherePreview = hasMixedAndOr || hasWhereFunctions ? whereText : '';
             let whereExpression = null;
             if (whereText) {
                 try {
@@ -1077,7 +1082,7 @@
                 width: 220,
                 height: 220
             }));
-            return { primaryTable, tables, canvasTables, joins, queryGridRows: queryRows, whereExpression };
+            return { primaryTable, tables, canvasTables, joins, queryGridRows: queryRows, queryWherePreview, whereExpression };
         }
 
         function isAdvancedAccessSql(sqlText) {
@@ -1087,6 +1092,9 @@
 
         function applyAdvancedSqlOnly(sqlText, queryName) {
             activeSqlText = sqlText;
+            appState.queryWherePreview = '';
+            appState.queryWhereExpression = null;
+            renderQueryGrid();
             isNewQueryDraft = !activeQueryId && !activeSheetQuery;
             updateSqlButtonState();
             updateSaveButtonState();
@@ -1113,6 +1121,8 @@
             activeSheetQuery = query;
             isNewQueryDraft = false;
             activeSqlText = query.sql;
+            appState.queryWherePreview = parsed.queryWherePreview;
+            appState.queryWhereExpression = parsed.whereExpression;
             appState.canvasTables = parsed.canvasTables;
             appState.joins = parsed.joins;
             appState.queryGridRows = parsed.queryGridRows;
@@ -1405,6 +1415,8 @@
         function resetToNewQuery() {
             appState.canvasTables = [];
             appState.joins = [];
+            appState.queryWherePreview = '';
+            appState.queryWhereExpression = null;
             activeQueryId = null;
             activeSheetQuery = null;
             isNewQueryDraft = true;
@@ -1449,6 +1461,17 @@
             appState.joins = query.joins || [];
             appState.queryGridRows = query.queryGridRows || [];
             activeSqlText = typeof query.sqlText === 'string' ? query.sqlText : null;
+            appState.queryWherePreview = query.queryWherePreview || '';
+            appState.queryWhereExpression = query.queryWhereExpression || null;
+            if ((!appState.queryWherePreview || !appState.queryWhereExpression) && activeSqlText) {
+                try {
+                    const parsed = parseSheetQuerySql(activeSqlText);
+                    if (!appState.queryWherePreview) appState.queryWherePreview = parsed.queryWherePreview;
+                    if (!appState.queryWhereExpression) appState.queryWhereExpression = parsed.whereExpression;
+                } catch (error) {
+                    console.warn(`Impossible d’afficher la clause WHERE de « ${query.name} » dans la grille :`, error);
+                }
+            }
             if (appState.queryGridRows.length === 0) initQueryGrid();
             else renderQueryGrid();
             activeQueryId = query.id;
@@ -1502,6 +1525,8 @@
             appState.canvasTables = draft.canvasTables || [];
             appState.joins = draft.joins || [];
             appState.queryGridRows = draft.queryGridRows || appState.queryGridRows;
+            appState.queryWherePreview = draft.queryWherePreview || '';
+            appState.queryWhereExpression = draft.queryWhereExpression || null;
             activeQueryId = draft.activeQueryId || null;
             activeSheetQuery = null;
             isNewQueryDraft = !activeQueryId;
@@ -1521,6 +1546,8 @@
                     canvasTables: appState.canvasTables,
                     joins: appState.joins,
                     queryGridRows: appState.queryGridRows,
+                    queryWherePreview: appState.queryWherePreview,
+                    queryWhereExpression: appState.queryWhereExpression,
                     activeQueryId,
                     sqlText: activeSqlText
                 }));
@@ -2382,6 +2409,8 @@
             appState.fileName = '';
             appState.canvasTables = [];
             appState.joins = [];
+            appState.queryWherePreview = '';
+            appState.queryWhereExpression = null;
             activeQueryId = null;
             activeSheetQuery = null;
             isNewQueryDraft = true;
@@ -2947,6 +2976,30 @@
                 });
                 tbody.appendChild(tr);
             });
+            if (appState.queryWherePreview) {
+                const tr = document.createElement('tr');
+                const label = document.createElement('td');
+                label.className = 'access-grid-header p-1 text-left whitespace-nowrap';
+                label.style.width = '90px';
+                label.style.minWidth = '90px';
+                label.textContent = 'Filtre SQL :';
+                tr.appendChild(label);
+
+                const cell = document.createElement('td');
+                cell.className = 'access-grid-cell p-1';
+                cell.colSpan = Math.max(1, appState.queryGridRows.length);
+                const expression = document.createElement('textarea');
+                expression.className = 'w-full resize-y rounded border border-amber-300 bg-amber-50 px-2 py-1 font-mono text-xs text-gray-800 focus:outline-none';
+                expression.rows = 2;
+                expression.readOnly = true;
+                expression.spellcheck = false;
+                expression.value = appState.queryWherePreview;
+                expression.title = 'Clause WHERE SQL complète, conservée lors des modifications des autres champs.';
+                expression.setAttribute('aria-label', 'Clause WHERE SQL complète');
+                cell.appendChild(expression);
+                tr.appendChild(cell);
+                tbody.appendChild(tr);
+            }
             const table = tbody.closest('table');
             table.style.tableLayout = 'fixed';
             table.style.width = `${90 + appState.queryGridRows.reduce((totalWidth, queryRow) => totalWidth + queryRow.width, 0)}px`;
@@ -3512,6 +3565,7 @@
                     }
                     group.push(condition);
                 });
+            if (appState.queryWherePreview) criteriaGroups.unshift(appState.queryWherePreview);
             if (criteriaGroups.length > 0) {
                 const whereConditions = criteriaGroups.map(group =>
                     Array.isArray(group)
@@ -3580,6 +3634,8 @@
             appState.canvasTables = parsed.canvasTables;
             appState.joins = parsed.joins;
             appState.queryGridRows = parsed.queryGridRows;
+            appState.queryWherePreview = parsed.queryWherePreview;
+            appState.queryWhereExpression = parsed.whereExpression;
             activeSqlText = sqlText;
             isNewQueryDraft = !activeQueryId && !activeSheetQuery;
             renderQueryGrid();
@@ -3751,9 +3807,31 @@
             const columnFilters = columns.map(() => ({ selectedValues: null, textFilter: null }));
             const filterButtons = [];
             let sortState = { columnIndex: -1, direction: 1 };
+            let selectedRowIndex = null;
             let closeColumnMenu = () => {};
+            const normalizeFilterValue = value => value === undefined || value === null ? '' : String(value);
+            const matchesColumnFilter = (rowIndex, columnIndex) => {
+                const filter = columnFilters[columnIndex];
+                const normalizedValue = normalizeFilterValue(getCellValue(rowIndex, columns[columnIndex]));
+                if (filter.selectedValues !== null && !filter.selectedValues.has(normalizedValue)) return false;
+                if (!filter.textFilter) return true;
+                const textValue = normalizedValue.toLocaleLowerCase();
+                const criterion = filter.textFilter.value;
+                switch (filter.textFilter.operator) {
+                    case 'contains': return textValue.includes(criterion);
+                    case 'notContains': return !textValue.includes(criterion);
+                    case 'equals': return textValue === criterion;
+                    case 'notEquals': return textValue !== criterion;
+                    case 'startsWith': return textValue.startsWith(criterion);
+                    case 'endsWith': return textValue.endsWith(criterion);
+                    case 'isBlank': return textValue === '';
+                    case 'isNotBlank': return textValue !== '';
+                    default: return true;
+                }
+            };
             const viewport = document.createElement('div');
             viewport.className = 'h-full overflow-auto bg-white text-xs';
+            viewport.tabIndex = -1;
 
             const table = document.createElement('div');
             table.className = 'min-w-max';
@@ -3943,12 +4021,18 @@
                     valuesSection.appendChild(searchValues);
                     const valuesList = document.createElement('div');
                     valuesList.className = 'max-h-52 overflow-auto rounded border border-[#c8c6c4] bg-white p-1 text-[#323130]';
+                    const availableRowIndexes = rows
+                        .map((row, rowIndex) => rowIndex)
+                        .filter(rowIndex => columns.every((otherColumn, otherColumnIndex) =>
+                            otherColumnIndex === columnIndex || matchesColumnFilter(rowIndex, otherColumnIndex)
+                        ));
                     const uniqueValues = new Map();
-                    rows.forEach((row, rowIndex) => {
+                    availableRowIndexes.forEach(rowIndex => {
                         const value = getCellValue(rowIndex, column);
                         const key = value === undefined || value === null || String(value) === '' ? '' : String(value);
                         if (!uniqueValues.has(key)) uniqueValues.set(key, key === '' ? '(Vides)' : key);
                     });
+                    const allColumnValues = new Set(rows.map((row, rowIndex) => normalizeFilterValue(getCellValue(rowIndex, column))));
                     const sortedValues = [...uniqueValues.entries()].sort((first, second) =>
                         first[0].localeCompare(second[0], undefined, { numeric: true, sensitivity: 'base' })
                     );
@@ -3964,9 +4048,15 @@
                     selectAllLabel.className = 'mb-1 flex cursor-pointer items-center gap-2 border-b border-[#edebe9] px-2 py-1 font-medium';
                     const selectAll = document.createElement('input');
                     selectAll.type = 'checkbox';
-                    selectAll.checked = selectedValues.size === uniqueValues.size;
+                    selectAll.checked = uniqueValues.size > 0 && [...uniqueValues.keys()].every(key => selectedValues.has(key));
                     selectAllLabel.append(selectAll, document.createTextNode('(Sélectionner tout)'));
                     valuesList.appendChild(selectAllLabel);
+                    if (sortedValues.length === 0) {
+                        const noValues = document.createElement('div');
+                        noValues.className = 'px-2 py-2 text-gray-500 italic';
+                        noValues.textContent = 'Aucune valeur disponible avec les autres filtres.';
+                        valuesList.appendChild(noValues);
+                    }
                     sortedValues.forEach(([key, label]) => {
                         const optionLabel = document.createElement('label');
                         optionLabel.className = 'flex cursor-pointer items-center gap-2 px-2 py-1 hover:bg-[#f3f9ff]';
@@ -3996,9 +4086,17 @@
                     const cancelValues = makeMenuButton('Annuler', () => closeColumnMenu());
                     cancelValues.className = 'rounded border border-[#8a8886] px-3 py-1 hover:bg-[#e1dfdd]';
                     const applyValues = makeMenuButton('OK', () => {
+                        const nextSelectedValues = columnFilters[columnIndex].selectedValues === null
+                            ? new Set(allColumnValues)
+                            : new Set(columnFilters[columnIndex].selectedValues);
+                        valueCheckboxes.forEach(item => {
+                            if (item.checkbox.checked) nextSelectedValues.add(item.key);
+                            else nextSelectedValues.delete(item.key);
+                        });
                         columnFilters[columnIndex].selectedValues = selectAll.checked
+                            && nextSelectedValues.size === allColumnValues.size
                             ? null
-                            : new Set(valueCheckboxes.filter(item => item.checkbox.checked).map(item => item.key));
+                            : nextSelectedValues;
                         viewport.scrollTop = 0;
                         renderVisibleRows();
                         closeColumnMenu();
@@ -4082,32 +4180,16 @@
                     button.classList.toggle('bg-blue-100', isFiltered || isSorted);
                     button.classList.toggle('text-blue-700', isFiltered || isSorted);
                     button.setAttribute('aria-pressed', String(isFiltered || isSorted));
+                    button.title = isFiltered ? 'Filtre actif — trier et modifier le filtre' : 'Trier et filtrer';
                     button.innerHTML = isSorted
                         ? `<i class="fa-solid ${sortState.direction === 1 ? 'fa-sort-up' : 'fa-sort-down'}"></i>`
-                        : '<i class="fa-solid fa-filter"></i>';
+                        : isFiltered
+                            ? '<i class="fa-solid fa-filter-circle-xmark"></i>'
+                            : '<i class="fa-solid fa-filter"></i>';
                 });
                 const filteredIndices = [];
                 rows.forEach((row, rowIndex) => {
-                    const matches = columns.every((column, columnIndex) => {
-                        const filter = columnFilters[columnIndex];
-                        const value = getCellValue(rowIndex, column);
-                        const normalizedValue = value === undefined || value === null ? '' : String(value);
-                        if (filter.selectedValues !== null && !filter.selectedValues.has(normalizedValue)) return false;
-                        if (!filter.textFilter) return true;
-                        const textValue = normalizedValue.toLocaleLowerCase();
-                        const criterion = filter.textFilter.value;
-                        switch (filter.textFilter.operator) {
-                            case 'contains': return textValue.includes(criterion);
-                            case 'notContains': return !textValue.includes(criterion);
-                            case 'equals': return textValue === criterion;
-                            case 'notEquals': return textValue !== criterion;
-                            case 'startsWith': return textValue.startsWith(criterion);
-                            case 'endsWith': return textValue.endsWith(criterion);
-                            case 'isBlank': return textValue === '';
-                            case 'isNotBlank': return textValue !== '';
-                            default: return true;
-                        }
-                    });
+                    const matches = columns.every((column, columnIndex) => matchesColumnFilter(rowIndex, columnIndex));
                     if (matches) filteredIndices.push(rowIndex);
                 });
                 if (sortState.columnIndex >= 0) {
@@ -4132,20 +4214,34 @@
                 for (let rowIndex = firstRow; rowIndex < lastRow; rowIndex++) {
                     const sourceRowIndex = filteredIndices[rowIndex];
                     const row = document.createElement('div');
-                    row.className = `grid h-7 border-b border-gray-200 ${rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'} hover:bg-blue-50`;
+                    row.className = `datasheet-row grid h-7 border-b border-gray-200 ${rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'} hover:bg-blue-50`;
+                    row.setAttribute('aria-selected', String(sourceRowIndex === selectedRowIndex));
                     row.style.gridTemplateColumns = getColumnTemplate();
                     columns.forEach(column => {
                         const cell = document.createElement('div');
-                        cell.className = 'overflow-hidden text-ellipsis whitespace-nowrap border-r border-gray-200 p-2 text-gray-800';
+                        cell.className = 'datasheet-cell overflow-hidden text-ellipsis whitespace-nowrap border-r border-gray-200 p-2 text-gray-800';
                         const value = getCellValue(sourceRowIndex, column);
                         cell.textContent = value === undefined || value === null ? '' : String(value);
                         cell.title = cell.textContent;
                         row.appendChild(cell);
                     });
+                    row.addEventListener('click', () => {
+                        if (window.getSelection()?.toString()) return;
+                        selectedRowIndex = sourceRowIndex;
+                        viewport.focus({ preventScroll: true });
+                        renderVisibleRows();
+                    });
                     visibleRows.appendChild(row);
                 }
             };
 
+            viewport.addEventListener('copy', event => {
+                if (window.getSelection()?.toString() || selectedRowIndex === null || !event.clipboardData) return;
+                event.clipboardData.setData('text/plain', columns
+                    .map(column => normalizeFilterValue(getCellValue(selectedRowIndex, column)))
+                    .join('\t'));
+                event.preventDefault();
+            });
             viewport.addEventListener('scroll', () => {
                 closeColumnMenu();
                 renderVisibleRows();
@@ -4192,6 +4288,8 @@
                     showQueryExecutionError(`Cette requête SQL ne peut pas être exécutée : ${error.message}`);
                     return;
                 }
+            } else if (appState.queryWherePreview) {
+                whereExpression = appState.queryWhereExpression;
             }
             const requiredTableNames = [getQueryPrimaryTable()];
             appState.joins.forEach(join => {
