@@ -949,6 +949,14 @@
                         return nested;
                     }
                     const left = parseValue();
+                    if (isKeyword('IS')) {
+                        position++;
+                        const negated = isKeyword('NOT');
+                        if (negated) position++;
+                        if (!isKeyword('NULL')) throw new Error('IS doit être suivi de NULL ou NOT NULL dans la clause WHERE.');
+                        position++;
+                        return { type: 'is-null', value: left, negated };
+                    }
                     const operator = expect('operator').value;
                     const right = parseValue();
                     return { type: 'compare', operator: operator === '!=' ? '<>' : operator, left, right };
@@ -3299,6 +3307,10 @@
                 if (node.type === 'nz') {
                     const value = evaluate(node.value);
                     return value === null || value === undefined ? evaluate(node.fallback) : value;
+                }
+                if (node.type === 'is-null') {
+                    const value = evaluate(node.value);
+                    return node.negated ? value !== null && value !== undefined : value === null || value === undefined;
                 }
                 if (node.type === 'and') return Boolean(evaluate(node.left)) && Boolean(evaluate(node.right));
                 if (node.type === 'or') return Boolean(evaluate(node.left)) || Boolean(evaluate(node.right));
