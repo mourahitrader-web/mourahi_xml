@@ -70,7 +70,9 @@
         let queryResultsWorkspaceCacheId = null;
         let workspaceTransitionToken = 0;
         let activeWorkspaceTransitionToken = 0;
+        let workspaceTransitionStartedAt = 0;
         let workspaceTransitionTimer = null;
+        const WORKSPACE_TRANSITION_MIN_DURATION_MS = 300;
         let activeQueryWorker = null;
         let activeQueryWorkerUrl = null;
         let queryExecutionPending = false;
@@ -4135,28 +4137,27 @@
                 : 'rounded border border-transparent px-2 py-1 text-xs text-gray-700 hover:bg-white';
         }
 
-        function beginWorkspaceTransition(message, showImmediately = false) {
+        function beginWorkspaceTransition(message) {
             const token = ++workspaceTransitionToken;
             activeWorkspaceTransitionToken = token;
+            workspaceTransitionStartedAt = performance.now();
             const overlay = document.getElementById('workspaceTransitionOverlay');
             document.getElementById('workspaceTransitionMessage').textContent = message;
             clearTimeout(workspaceTransitionTimer);
-            if (showImmediately) {
-                overlay.classList.remove('hidden');
-                overlay.classList.add('flex');
-                workspaceTransitionTimer = null;
-                return token;
-            }
-            workspaceTransitionTimer = setTimeout(() => {
-                if (token !== workspaceTransitionToken) return;
-                overlay.classList.remove('hidden');
-                overlay.classList.add('flex');
-            }, 80);
+            overlay.classList.remove('hidden');
+            overlay.classList.add('flex');
+            workspaceTransitionTimer = null;
             return token;
         }
 
         function finishWorkspaceTransition(token) {
             if (token !== workspaceTransitionToken) return;
+            const remainingDuration = WORKSPACE_TRANSITION_MIN_DURATION_MS - (performance.now() - workspaceTransitionStartedAt);
+            if (remainingDuration > 0) {
+                clearTimeout(workspaceTransitionTimer);
+                workspaceTransitionTimer = setTimeout(() => finishWorkspaceTransition(token), remainingDuration);
+                return;
+            }
             clearTimeout(workspaceTransitionTimer);
             workspaceTransitionTimer = null;
             const overlay = document.getElementById('workspaceTransitionOverlay');
@@ -4166,8 +4167,7 @@
         }
 
         function showQueryDesignTab() {
-            const previousTable = activeWorkspaceTab !== 'query-design' ? appState.tables[activeWorkspaceTab] : null;
-            const transitionToken = beginWorkspaceTransition('Affichage de la conception...', Boolean(previousTable && previousTable.length >= 5000));
+            const transitionToken = beginWorkspaceTransition('Affichage de la conception...');
             activeWorkspaceTab = 'query-design';
             queryWorkspaceView = 'design';
             document.getElementById('erdCanvas').classList.remove('hidden');
@@ -4204,7 +4204,9 @@
             if (!appState.tables[tableName]) return;
             const tableRows = appState.tables[tableName];
             const needsTransition = tableRows.length >= 5000;
-            const transitionToken = beginWorkspaceTransition('Chargement de la table...', needsTransition);
+            const transitionToken = needsTransition
+                ? beginWorkspaceTransition('Chargement de la table...')
+                : null;
             activeWorkspaceTab = tableName;
             document.getElementById('erdCanvas').classList.add('hidden');
             document.getElementById('queryGridPanel').classList.add('hidden');
@@ -4213,10 +4215,12 @@
             document.getElementById('tableWorkspace').classList.remove('hidden');
             document.getElementById('tableWorkspace').classList.add('flex');
             const renderTable = () => {
-                if (transitionToken !== workspaceTransitionToken) return;
+                if (transitionToken !== null && transitionToken !== workspaceTransitionToken) return;
                 renderTableWorkspace(tableName);
                 renderWorkspaceTabs();
-                requestAnimationFrame(() => requestAnimationFrame(() => finishWorkspaceTransition(transitionToken)));
+                if (transitionToken !== null) {
+                    requestAnimationFrame(() => requestAnimationFrame(() => finishWorkspaceTransition(transitionToken)));
+                }
             };
             if (needsTransition) requestAnimationFrame(() => requestAnimationFrame(renderTable));
             else renderTable();
