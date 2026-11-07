@@ -135,6 +135,14 @@
                     <i class="fa-solid fa-diagram-project mr-1"></i>Conception de requête
                 </button>
                 <div id="tableWorkspaceTabs" class="flex items-center gap-1"></div>
+                <div id="queryViewButtons" class="ml-auto flex shrink-0 items-center gap-1" role="group" aria-label="Vue de la requête">
+                    <button id="queryDesignViewButton" type="button" onclick="showQueryDesignTab()" class="rounded border border-[#8a8886] bg-white px-2 py-1 text-xs font-semibold text-red-700" aria-pressed="true">
+                        <i class="fa-solid fa-diagram-project mr-1"></i>Vue requête
+                    </button>
+                    <button id="queryResultsViewButton" type="button" onclick="showQueryResultsTab()" class="rounded border border-transparent px-2 py-1 text-xs text-gray-700 hover:bg-white" aria-pressed="false">
+                        <i class="fa-solid fa-table-list mr-1"></i>Vue table
+                    </button>
+                </div>
             </div>
 
             <!-- Zone Visuelle ERD (Tables glissables & redimensionnables avec SVG) -->
@@ -170,7 +178,20 @@
                 </div>
                 <div id="tableWorkspaceContainer" class="flex-1 overflow-auto p-4"></div>
             </div>
+            <div id="queryResultsWorkspace" class="hidden flex-1 min-h-0 flex-col overflow-hidden bg-[#f9f9f9]" role="tabpanel" aria-label="Résultats de la requête">
+                <div class="flex items-center justify-between border-b border-[#c8c6c4] bg-[#e1dfdd] px-3 py-1.5">
+                    <span id="queryResultsWorkspaceTitle" class="font-semibold text-gray-700">Résultats de la requête</span>
+                    <span id="queryResultsWorkspaceCount" class="text-gray-600">0 enregistrement(s)</span>
+                </div>
+                <div id="queryResultsWorkspaceContainer" class="flex-1 min-h-0 overflow-auto p-4"></div>
+            </div>
 
+            <div id="workspaceTransitionOverlay" class="absolute inset-0 z-[45] hidden items-center justify-center bg-white/70" role="status" aria-live="polite">
+                <div class="flex items-center gap-3 rounded border border-gray-300 bg-white px-4 py-3 text-gray-800 shadow-lg">
+                    <i class="fa-solid fa-spinner animate-spin text-lg text-red-700"></i>
+                    <span id="workspaceTransitionMessage" class="font-semibold">Changement de vue...</span>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -384,7 +405,7 @@
     </div>
 
     <script src="js/compatibility.js"></script>
-    <script src="js/app.js?cache=bigsi-xml-v20"></script>
+    <script src="js/app.js?cache=bigsi-xml-v35"></script>
     <script>
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function () {

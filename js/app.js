@@ -36,8 +36,15 @@
             activeJoinId: null   // ID de la liaison actuellement cliquée
         };
         const QUERY_STORAGE_KEY = 'xml2data.savedQueries';
+        const PROJECT_STORAGE_KEY = 'xml2data.projectState';
         const QUERY_DRAFT_KEY = 'xml2data.queryDraft';
+        const LOCAL_DATABASE_NAME = 'BigSi_XML';
+        const LOCAL_DATABASE_VERSION = 2;
+        const PROJECT_STATE_ID = 'current';
         const QUERY_SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/1lTZqnON6cHFABqoQuNamg7l2ecwqi7A6QsHO1VnErWw/export?format=csv';
+        let localDatabasePromise = null;
+        let persistenceErrorShown = false;
+        let tableDataRevision = 0;
         let savedQueries = [];
         let sheetQueries = [];
         let sheetQueriesLoaded = false;
@@ -56,16 +63,28 @@
         let pendingNewQueryAfterSave = false;
         let lastQueryResults = [];
         let lastQueryResultColumns = [];
+        let lastQueryResultCacheId = null;
         let openTableTabs = [];
         let activeWorkspaceTab = 'query-design';
+        let queryWorkspaceView = 'design';
+        let queryResultsWorkspaceCacheId = null;
+        let workspaceTransitionToken = 0;
+        let activeWorkspaceTransitionToken = 0;
+        let workspaceTransitionTimer = null;
         let activeQueryWorker = null;
+        let activeQueryWorkerUrl = null;
+        let queryExecutionPending = false;
+        let queryExecutionToken = 0;
         let queryExecutionTimer = null;
+        let projectPersistenceTimer = null;
         const QUERY_EXECUTION_TIMEOUT_MS = 30000;
+        const PROJECT_PERSISTENCE_DEBOUNCE_MS = 200;
         const QUERY_MAX_INTERMEDIATE_ROWS = 1000000;
 
-        window.addEventListener('DOMContentLoaded', () => {
+        window.addEventListener('DOMContentLoaded', async () => {
             initQueryGrid();
-            loadSavedQueries();
+            await loadSavedQueries();
+            await restoreProjectState();
             savedQueryDefinition = getQueryDefinition();
             restoreQueryDraft();
             updateQueryDesignTabLabel();
@@ -87,6 +106,10 @@
             document.addEventListener('dblclick', updateSaveButtonState);
             document.addEventListener('mouseup', updateSaveButtonState);
             document.addEventListener('dragend', updateSaveButtonState);
+            window.addEventListener('pagehide', flushProjectStatePersistence);
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') flushProjectStatePersistence();
+            });
             updateSaveButtonState();
         });
 
@@ -125,14 +148,38 @@
             activeSqlText = null;
         }
 
+        function getQueryResultCacheId() {
+            const queryDefinition = {
+                sqlText: activeSqlText,
+                joins: appState.joins.map(({ fromTable, fromField, toTable, toField, type }) => ({
+                    fromTable,
+                    fromField,
+                    toTable,
+                    toField,
+                    type
+                })),
+                queryGridRows: appState.queryGridRows.map(({
+                    field, table, alias, expression, calculatedExpression, total, show, sort, criteria, or
+                }) => ({
+                    field, table, alias, expression, calculatedExpression,
+                    total: total || 'GROUP BY', show, sort, criteria, or
+                })),
+                queryWherePreview: appState.queryWherePreview,
+                queryWhereExpression: appState.queryWhereExpression
+            };
+            return JSON.stringify({ tableDataRevision, queryDefinition });
+        }
+
         function updateSaveButtonState() {
             const button = document.getElementById('saveQueryButton');
-            if (!button) return;
             const hasChanges = getQueryDefinition() !== savedQueryDefinition;
-            button.disabled = !hasChanges;
-            button.title = hasChanges ? 'Enregistrer les modifications de la requête' : 'Aucune modification à enregistrer';
+            if (button) {
+                button.disabled = !hasChanges;
+                button.title = hasChanges ? 'Enregistrer les modifications de la requête' : 'Aucune modification à enregistrer';
+            }
             const sqlSaveButton = document.getElementById('saveSqlButton');
             if (sqlSaveButton) sqlSaveButton.disabled = !hasChanges;
+            if (hasChanges) scheduleProjectStatePersistence();
         }
 
         function updateSqlButtonState() {
@@ -144,23 +191,280 @@
         }
 
         function loadSavedQueries() {
-            try {
-                const storedQueries = JSON.parse(localStorage.getItem(QUERY_STORAGE_KEY) || '[]');
-                savedQueries = Array.isArray(storedQueries) ? storedQueries : [];
-            } catch (error) {
-                savedQueries = [];
-            }
-            renderSavedQueries();
+            return (async () => {
+                try {
+                    savedQueries = await readLocalStore('savedQueries', 'getAll');
+                    if (savedQueries.length === 0) {
+                        const legacyQueries = JSON.parse(localStorage.getItem(QUERY_STORAGE_KEY) || '[]');
+                        if (Array.isArray(legacyQueries) && legacyQueries.length > 0) {
+                            savedQueries = legacyQueries;
+                            if (!await persistSavedQueries()) savedQueries = [];
+                        }
+                    }
+                } catch (error) {
+                    console.error('Impossible de charger les requêtes depuis IndexedDB :', error);
+                    savedQueries = [];
+                    reportPersistenceError(error);
+                }
+                renderSavedQueries();
+            })();
         }
 
         function persistSavedQueries() {
-            try {
-                localStorage.setItem(QUERY_STORAGE_KEY, JSON.stringify(savedQueries));
-                return true;
-            } catch (error) {
-                alert("Impossible d'enregistrer les requêtes dans le stockage du navigateur.");
-                return false;
+            return replaceSavedQueriesInDatabase()
+                .then(() => {
+                    removeLegacyStorageValue(QUERY_STORAGE_KEY);
+                    return true;
+                })
+                .catch(error => {
+                    console.error('Impossible d’enregistrer les requêtes dans IndexedDB :', error);
+                    reportPersistenceError(error);
+                    return false;
+                });
+        }
+
+        function openLocalDatabase() {
+            if (!window.indexedDB) {
+                return Promise.reject(new Error('IndexedDB n’est pas disponible dans ce navigateur.'));
             }
+            if (!localDatabasePromise) {
+                localDatabasePromise = new Promise((resolve, reject) => {
+                    const request = window.indexedDB.open(LOCAL_DATABASE_NAME, LOCAL_DATABASE_VERSION);
+                    let settled = false;
+                    request.onupgradeneeded = () => {
+                        const database = request.result;
+                        if (!database.objectStoreNames.contains('projectState')) {
+                            database.createObjectStore('projectState', { keyPath: 'id' });
+                        }
+                        if (!database.objectStoreNames.contains('savedQueries')) {
+                            database.createObjectStore('savedQueries', { keyPath: 'id' });
+                        }
+                        if (!database.objectStoreNames.contains('queryResults')) {
+                            database.createObjectStore('queryResults', { keyPath: 'id' });
+                        }
+                    };
+                    request.onsuccess = () => {
+                        const database = request.result;
+                        if (settled) {
+                            database.close();
+                            return;
+                        }
+                        settled = true;
+                        database.onversionchange = () => database.close();
+                        resolve(database);
+                    };
+                    request.onerror = () => {
+                        if (settled) return;
+                        settled = true;
+                        localDatabasePromise = null;
+                        reject(request.error || new Error('Impossible d’ouvrir IndexedDB.'));
+                    };
+                    request.onblocked = () => {
+                        console.error('L’ouverture de la base IndexedDB est bloquée par un autre onglet.');
+                        if (settled) return;
+                        settled = true;
+                        localDatabasePromise = null;
+                        reject(new Error('Fermez les autres onglets de l’application puis réessayez.'));
+                    };
+                });
+            }
+            return localDatabasePromise;
+        }
+
+        function readLocalStore(storeName, operation, value) {
+            return openLocalDatabase().then(database => new Promise((resolve, reject) => {
+                const transaction = database.transaction(storeName, 'readonly');
+                const store = transaction.objectStore(storeName);
+                const request = operation === 'getAll' ? store.getAll() : store.get(value);
+                let result;
+                request.onsuccess = () => { result = request.result; };
+                transaction.oncomplete = () => resolve(result);
+                transaction.onerror = () => reject(transaction.error || request.error || new Error('Lecture IndexedDB échouée.'));
+                transaction.onabort = () => reject(transaction.error || new Error('Lecture IndexedDB annulée.'));
+            }));
+        }
+
+        function writeProjectState(snapshot) {
+            return openLocalDatabase().then(database => new Promise((resolve, reject) => {
+                const transaction = database.transaction('projectState', 'readwrite');
+                transaction.objectStore('projectState').put({ ...snapshot, id: PROJECT_STATE_ID });
+                transaction.oncomplete = () => resolve();
+                transaction.onerror = () => reject(transaction.error || new Error('Écriture IndexedDB échouée.'));
+                transaction.onabort = () => reject(transaction.error || new Error('Écriture IndexedDB annulée.'));
+            }));
+        }
+
+        function saveQueryResult(cacheId, results, columns) {
+            return openLocalDatabase().then(database => new Promise((resolve, reject) => {
+                const transaction = database.transaction('queryResults', 'readwrite');
+                transaction.objectStore('queryResults').put({
+                    id: cacheId,
+                    dataRevision: tableDataRevision,
+                    results,
+                    columns,
+                    savedAt: new Date().toISOString()
+                });
+                transaction.oncomplete = () => resolve();
+                transaction.onerror = () => reject(transaction.error || new Error('Écriture du résultat dans IndexedDB échouée.'));
+                transaction.onabort = () => reject(transaction.error || new Error('Écriture du résultat dans IndexedDB annulée.'));
+            }));
+        }
+
+        function clearQueryResultCache() {
+            return openLocalDatabase().then(database => new Promise((resolve, reject) => {
+                const transaction = database.transaction('queryResults', 'readwrite');
+                transaction.objectStore('queryResults').clear();
+                transaction.oncomplete = () => resolve();
+                transaction.onerror = () => reject(transaction.error || new Error('Suppression des résultats mis en cache échouée.'));
+                transaction.onabort = () => reject(transaction.error || new Error('Suppression des résultats mis en cache annulée.'));
+            }));
+        }
+
+        function replaceSavedQueriesInDatabase() {
+            return openLocalDatabase().then(database => new Promise((resolve, reject) => {
+                const transaction = database.transaction('savedQueries', 'readwrite');
+                const store = transaction.objectStore('savedQueries');
+                store.clear();
+                savedQueries.forEach(query => store.put(query));
+                transaction.oncomplete = () => resolve();
+                transaction.onerror = () => reject(transaction.error || new Error('Écriture des requêtes dans IndexedDB échouée.'));
+                transaction.onabort = () => reject(transaction.error || new Error('Écriture des requêtes dans IndexedDB annulée.'));
+            }));
+        }
+
+        function clearLocalDatabase() {
+            return openLocalDatabase().then(database => new Promise((resolve, reject) => {
+                const transaction = database.transaction(['projectState', 'savedQueries', 'queryResults'], 'readwrite');
+                transaction.objectStore('projectState').clear();
+                transaction.objectStore('savedQueries').clear();
+                transaction.objectStore('queryResults').clear();
+                transaction.oncomplete = () => resolve();
+                transaction.onerror = () => reject(transaction.error || new Error('Suppression IndexedDB échouée.'));
+                transaction.onabort = () => reject(transaction.error || new Error('Suppression IndexedDB annulée.'));
+            }));
+        }
+
+        function reportPersistenceError(error) {
+            const message = error && error.message ? error.message : String(error);
+            const status = document.getElementById('statusBarMode');
+            if (status) status.textContent = 'Erreur de sauvegarde locale';
+            if (!persistenceErrorShown) {
+                persistenceErrorShown = true;
+                alert(`La sauvegarde locale IndexedDB a échoué : ${message}`);
+            }
+        }
+
+        function removeLegacyStorageValue(key) {
+            try {
+                localStorage.removeItem(key);
+            } catch (error) {
+                console.warn(`Impossible de supprimer l’ancienne donnée locale ${key} :`, error);
+            }
+        }
+
+        function persistProjectState() {
+            const snapshot = {
+                fileName: appState.fileName,
+                tables: appState.tables,
+                tableOrder: appState.tableOrder,
+                tableSources: appState.tableSources,
+                xmlSources: appState.xmlSources,
+                canvasTables: appState.canvasTables,
+                joins: appState.joins,
+                queryGridRows: appState.queryGridRows,
+                queryWherePreview: appState.queryWherePreview,
+                queryWhereExpression: appState.queryWhereExpression,
+                activeQueryId,
+                activeSqlText,
+                openTableTabs,
+                activeWorkspaceTab,
+                queryWorkspaceView,
+                tableDataRevision,
+                lastQueryResults,
+                lastQueryResultColumns,
+                lastQueryResultCacheId
+            };
+            return writeProjectState(snapshot)
+                .then(() => {
+                    removeLegacyStorageValue(PROJECT_STORAGE_KEY);
+                    return true;
+                })
+                .catch(error => {
+                    console.error('Impossible d’enregistrer les tables et résultats dans IndexedDB :', error);
+                    reportPersistenceError(error);
+                    return false;
+                });
+        }
+
+        function scheduleProjectStatePersistence() {
+            if (projectPersistenceTimer !== null) clearTimeout(projectPersistenceTimer);
+            projectPersistenceTimer = setTimeout(() => {
+                projectPersistenceTimer = null;
+                persistProjectState();
+            }, PROJECT_PERSISTENCE_DEBOUNCE_MS);
+        }
+
+        function flushProjectStatePersistence() {
+            if (projectPersistenceTimer === null) return;
+            clearTimeout(projectPersistenceTimer);
+            projectPersistenceTimer = null;
+            persistProjectState();
+        }
+
+        function restoreProjectState() {
+            return (async () => {
+                try {
+                    let snapshot = await readLocalStore('projectState', 'get', PROJECT_STATE_ID);
+                    if (!snapshot) {
+                        const legacySnapshot = localStorage.getItem(PROJECT_STORAGE_KEY);
+                        if (legacySnapshot) {
+                            snapshot = JSON.parse(legacySnapshot);
+                            await writeProjectState(snapshot);
+                            removeLegacyStorageValue(PROJECT_STORAGE_KEY);
+                        }
+                    }
+                    if (!snapshot || typeof snapshot !== 'object') return;
+                    appState.fileName = snapshot.fileName || '';
+                    appState.tables = snapshot.tables || {};
+                    appState.tableOrder = Array.isArray(snapshot.tableOrder) ? snapshot.tableOrder : Object.keys(appState.tables);
+                    appState.tableSources = snapshot.tableSources || {};
+                    appState.xmlSources = snapshot.xmlSources || {};
+                    appState.canvasTables = Array.isArray(snapshot.canvasTables) ? snapshot.canvasTables : [];
+                    appState.joins = Array.isArray(snapshot.joins) ? snapshot.joins : [];
+                    appState.queryGridRows = Array.isArray(snapshot.queryGridRows) ? snapshot.queryGridRows : [];
+                    appState.queryWherePreview = snapshot.queryWherePreview || '';
+                    appState.queryWhereExpression = snapshot.queryWhereExpression || null;
+                    activeQueryId = snapshot.activeQueryId || null;
+                    activeSqlText = typeof snapshot.activeSqlText === 'string' ? snapshot.activeSqlText : null;
+                    openTableTabs = Array.isArray(snapshot.openTableTabs) ? snapshot.openTableTabs : [];
+                    activeWorkspaceTab = snapshot.activeWorkspaceTab || 'query-design';
+                    queryWorkspaceView = snapshot.queryWorkspaceView === 'results' ? 'results' : 'design';
+                    tableDataRevision = Number.isInteger(snapshot.tableDataRevision) ? snapshot.tableDataRevision : 0;
+                    lastQueryResults = Array.isArray(snapshot.lastQueryResults) ? snapshot.lastQueryResults : [];
+                    lastQueryResultColumns = Array.isArray(snapshot.lastQueryResultColumns) ? snapshot.lastQueryResultColumns : [];
+                    lastQueryResultCacheId = typeof snapshot.lastQueryResultCacheId === 'string'
+                        ? snapshot.lastQueryResultCacheId
+                        : null;
+                    document.getElementById('currentProjectTitle').textContent = appState.fileName;
+                    if (appState.queryGridRows.length === 0) initQueryGrid();
+                    else renderQueryGrid();
+                    refreshNavigationPane();
+                    renderCanvasTables();
+                    renderSvgJoins();
+                    updateActionButtonsState();
+                    updateStatusBar();
+                    if (activeWorkspaceTab !== 'query-design' && appState.tables[activeWorkspaceTab]) {
+                        showTableTab(activeWorkspaceTab);
+                    } else if (queryWorkspaceView === 'results') {
+                        showQueryResultsTab();
+                    } else {
+                        showQueryDesignTab();
+                    }
+                } catch (error) {
+                    console.error('Impossible de restaurer les données locales depuis IndexedDB :', error);
+                    reportPersistenceError(error);
+                }
+            })();
         }
 
         function renderSavedQueries() {
@@ -199,6 +503,7 @@
                 });
                 queries.forEach(({ query, index }) => {
                     const row = document.createElement('div');
+                    row.dataset.sheetQueryIndex = String(index);
                     row.className = `flex items-center justify-between gap-1 rounded p-1.5 pl-5 group ${activeSheetQuery && activeSheetQuery.name === query.name ? 'bg-red-50 text-red-800' : 'text-gray-800 hover:bg-gray-100'}`;
                     row.title = query.name;
 
@@ -212,6 +517,11 @@
                     name.textContent = query.name;
                     nameButton.appendChild(name);
                     nameButton.addEventListener('click', () => loadSheetQuery(index));
+                    nameButton.addEventListener('dblclick', event => {
+                        event.stopPropagation();
+                        if (activeSheetQuery !== query && !loadSheetQuery(index)) return;
+                        showQueryResultsTab();
+                    });
                     nameButton.addEventListener('contextmenu', event => {
                         event.preventDefault();
                         event.stopPropagation();
@@ -236,6 +546,7 @@
             } else {
                 savedQueries.forEach(query => {
                     const row = document.createElement('div');
+                    row.dataset.savedQueryId = query.id;
                     row.className = `flex items-center justify-between p-1.5 rounded group ${query.id === activeQueryId ? 'bg-red-50 text-red-800' : 'hover:bg-gray-100 text-gray-800'}`;
                     const openButton = document.createElement('button');
                     openButton.type = 'button';
@@ -255,8 +566,8 @@
                     });
                     openButton.addEventListener('dblclick', event => {
                         event.stopPropagation();
-                        loadSavedQuery(query.id);
-                        showQueryDesignTab();
+                        if (activeQueryId !== query.id && !loadSavedQuery(query.id)) return;
+                        showQueryResultsTab();
                     });
                     openButton.addEventListener('dragstart', event => {
                         event.dataTransfer.setData('application/x-query-id', query.id);
@@ -274,6 +585,24 @@
                     list.appendChild(row);
                 });
             }
+        }
+
+        function updateSavedQueryHighlights() {
+            document.querySelectorAll('#savedQueryList [data-saved-query-id]').forEach(row => {
+                const isActive = row.dataset.savedQueryId === activeQueryId;
+                row.classList.toggle('bg-red-50', isActive);
+                row.classList.toggle('text-red-800', isActive);
+                row.classList.toggle('hover:bg-gray-100', !isActive);
+                row.classList.toggle('text-gray-800', !isActive);
+            });
+            document.querySelectorAll('#sheetQueryList [data-sheet-query-index]').forEach(row => {
+                const query = sheetQueries[Number(row.dataset.sheetQueryIndex)];
+                const isActive = query === activeSheetQuery;
+                row.classList.toggle('bg-red-50', isActive);
+                row.classList.toggle('text-red-800', isActive);
+                row.classList.toggle('hover:bg-gray-100', !isActive);
+                row.classList.toggle('text-gray-800', !isActive);
+            });
         }
 
         async function loadSheetQueries() {
@@ -585,7 +914,7 @@
                 const joinMatch = fromText.slice(position).match(/^(?:(LEFT|RIGHT|INNER|FULL|CROSS)(?:\s+OUTER)?\s+)?JOIN\b/i);
                 if (!joinMatch) throw new Error(`Syntaxe FROM/JOIN non prise en charge près de « ${fromText.slice(position, position + 30)} ».`);
                 const joinType = (joinMatch[1] || 'INNER').toUpperCase();
-                if (joinType === 'RIGHT' || joinType === 'FULL' || joinType === 'CROSS') {
+                if (joinType === 'FULL' || joinType === 'CROSS') {
                     throw new Error(`${joinType} JOIN n’est pas pris en charge par le moteur de conception.`);
                 }
                 position += joinMatch[0].length;
@@ -708,6 +1037,21 @@
                     }
                     if (token.type !== 'identifier') throw new Error('Champ ou valeur attendu dans le champ calculé.');
                     if (peek('IIF')) return parseExpression();
+                    const nextToken = tokens[position + 1];
+                    if (nextToken && nextToken.value === '(') {
+                        const functionName = token.value.toUpperCase();
+                        position += 2;
+                        const arguments = [];
+                        if (tokens[position] && tokens[position].value !== ')') {
+                            do {
+                                arguments.push(parseExpression());
+                                if (!tokens[position] || tokens[position].value !== ',') break;
+                                position++;
+                            } while (tokens[position] && tokens[position].value !== ')');
+                        }
+                        expect(')');
+                        return { type: 'function', name: functionName, arguments };
+                    }
                     const first = token.value;
                     position++;
                     let reference = { table: '', field: first };
@@ -778,7 +1122,7 @@
                     if (asParts[1].slice(aliasRef.end).trim()) throw new Error(`Alias invalide : ${asParts[1]}.`);
                     alias = aliasRef.value;
                 }
-                if (!aggregateMatch && /^IIF\s*\(/i.test(source)) {
+                if (!aggregateMatch && (/^IIF\s*\(/i.test(source) || /^[A-Za-z_][\w$]*\s*\(/i.test(source))) {
                     if (!alias) throw new Error(`Le champ calculé doit avoir un alias avec AS : ${item}.`);
                     return {
                         field: alias,
@@ -1121,7 +1465,7 @@
 
         function loadSheetQuery(index) {
             const query = sheetQueries[index];
-            if (!query) return;
+            if (!query) return false;
             let parsed;
             try {
                 parsed = parseSheetQuerySql(query.sql);
@@ -1130,7 +1474,7 @@
                 status.classList.add('text-red-700');
                 status.textContent = `« ${query.name} » n’a pas été chargée : ${error.message}`;
                 console.error(`Requête « ${query.name} » non prise en charge :`, error);
-                return;
+                return false;
             }
 
             activeQueryId = null;
@@ -1150,7 +1494,7 @@
             updateSqlButtonState();
             savedQueryDefinition = getQueryDefinition();
             updateSaveButtonState();
-            renderSavedQueries();
+            updateSavedQueryHighlights();
             showQueryDesignTab();
 
             const missingTables = parsed.tables.filter(tableName => !appState.tables[tableName]);
@@ -1160,16 +1504,17 @@
                 ? `« ${query.name} » chargée. Tables à importer avant exécution : ${missingTables.join(', ')}.`
                 : `« ${query.name} » chargée dans la conception.`;
             document.getElementById('statusBarMode').textContent = `Requête « ${query.name} » chargée`;
+            return true;
         }
 
-        function saveCurrentQuery() {
+        async function saveCurrentQuery() {
             let query = savedQueries.find(item => item.id === activeQueryId);
             if (!query) {
                 openQueryNameModal();
                 return false;
             }
 
-            return persistQuery(query);
+            return await persistQuery(query);
         }
 
         function openQueryNameModal() {
@@ -1241,7 +1586,7 @@
             contextMenuQuerySource = 'saved';
         }
 
-        function duplicateSheetQuery(index) {
+        async function duplicateSheetQuery(index) {
             const source = sheetQueries[index];
             if (!source) return;
             let parsed;
@@ -1269,7 +1614,7 @@
                 updatedAt: now
             };
             savedQueries.push(duplicate);
-            if (!persistSavedQueries()) {
+            if (!await persistSavedQueries()) {
                 savedQueries = savedQueries.filter(query => query.id !== duplicate.id);
                 return;
             }
@@ -1278,7 +1623,7 @@
             return duplicate;
         }
 
-        function duplicateSavedQuery(queryId) {
+        async function duplicateSavedQuery(queryId) {
             const source = savedQueries.find(query => query.id === queryId);
             if (!source) return;
             const baseName = `${source.name} (copie)`;
@@ -1294,7 +1639,7 @@
             duplicate.createdAt = new Date().toISOString();
             duplicate.updatedAt = duplicate.createdAt;
             savedQueries.push(duplicate);
-            if (!persistSavedQueries()) {
+            if (!await persistSavedQueries()) {
                 savedQueries = savedQueries.filter(query => query.id !== duplicate.id);
                 return;
             }
@@ -1324,7 +1669,7 @@
             pendingNewQueryAfterSave = false;
         }
 
-        function saveQueryFromDialog(event) {
+        async function saveQueryFromDialog(event) {
             event.preventDefault();
             const name = document.getElementById('queryNameInput').value.trim();
             if (!name) return;
@@ -1339,7 +1684,7 @@
                 }
                 const query = { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, name };
                 savedQueries.push(query);
-                if (!persistQuery(query)) {
+                if (!await persistQuery(query)) {
                     savedQueries = savedQueries.filter(item => item.id !== query.id);
                     return;
                 }
@@ -1370,7 +1715,7 @@
                 }
                 const previousName = query.name;
                 query.name = name;
-                if (!persistSavedQueries()) {
+                if (!await persistSavedQueries()) {
                     query.name = previousName;
                     return;
                 }
@@ -1386,7 +1731,7 @@
                 query = { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, name };
                 savedQueries.push(query);
             }
-            if (persistQuery(query)) {
+            if (await persistQuery(query)) {
                 document.getElementById('queryNameModal').classList.add('hidden');
                 if (pendingCloseAfterSave) {
                     pendingCloseAfterSave = false;
@@ -1402,7 +1747,7 @@
             document.getElementById('newQueryConfirmModal').classList.add('hidden');
         }
 
-        function resolveNewQueryConfirmation(decision) {
+        async function resolveNewQueryConfirmation(decision) {
             closeNewQueryConfirmation();
             if (decision === 'cancel') return;
             if (decision === 'no') {
@@ -1411,7 +1756,7 @@
             }
 
             if (savedQueries.some(query => query.id === activeQueryId)) {
-                if (!saveCurrentQuery()) return;
+                if (!await saveCurrentQuery()) return;
                 resetToNewQuery();
             } else {
                 pendingNewQueryAfterSave = true;
@@ -1439,6 +1784,7 @@
             activeSqlText = null;
             lastQueryResults = [];
             lastQueryResultColumns = [];
+            lastQueryResultCacheId = null;
             updateQueryDesignTabLabel();
             updateSqlButtonState();
             initQueryGrid();
@@ -1449,11 +1795,12 @@
             renderSvgJoins();
             updateActionButtonsState();
             document.getElementById('statusBarMode').textContent = 'Nouvelle requête';
+            persistProjectState();
         }
 
-        function persistQuery(query) {
+        async function persistQuery(query) {
             Object.assign(query, JSON.parse(getQueryDefinition()), { updatedAt: new Date().toISOString() });
-            if (!persistSavedQueries()) return false;
+            if (!await persistSavedQueries()) return false;
             activeQueryId = query.id;
             activeSheetQuery = null;
             isNewQueryDraft = false;
@@ -1464,13 +1811,14 @@
             renderSavedQueries();
             updateQueryDesignTabLabel();
             document.getElementById('statusBarMode').textContent = `Requête « ${query.name} » enregistrée`;
+            persistProjectState();
             return true;
         }
 
         function loadSavedQuery(queryId) {
             const query = savedQueries.find(item => item.id === queryId);
-            if (!query) return;
-            if (getQueryDefinition() !== savedQueryDefinition && !confirm('Les modifications non enregistrées seront perdues. Continuer ?')) return;
+            if (!query) return false;
+            if (getQueryDefinition() !== savedQueryDefinition && !confirm('Les modifications non enregistrées seront perdues. Continuer ?')) return false;
 
             activeSheetQuery = null;
             appState.canvasTables = query.canvasTables || [];
@@ -1505,16 +1853,17 @@
             refreshNavigationPane();
             renderCanvasTables();
             renderSvgJoins();
-            renderSavedQueries();
+            updateSavedQueryHighlights();
             showQueryDesignTab();
+            return true;
         }
 
-        function deleteSavedQuery(queryId) {
+        async function deleteSavedQuery(queryId) {
             const query = savedQueries.find(item => item.id === queryId);
             if (!query || !confirm(`Supprimer la requête « ${query.name} » ?`)) return;
             const previousQueries = savedQueries;
             savedQueries = savedQueries.filter(item => item.id !== queryId);
-            if (!persistSavedQueries()) {
+            if (!await persistSavedQueries()) {
                 savedQueries = previousQueries;
                 return;
             }
@@ -1559,26 +1908,8 @@
             refreshNavigationPane();
             renderCanvasTables();
             renderSvgJoins();
+            persistProjectState();
         }
-
-        window.addEventListener('beforeunload', event => {
-            if (skipUnloadWarning || getQueryDefinition() === savedQueryDefinition) return;
-            try {
-                localStorage.setItem(QUERY_DRAFT_KEY, JSON.stringify({
-                    canvasTables: appState.canvasTables,
-                    joins: appState.joins,
-                    queryGridRows: appState.queryGridRows,
-                    queryWherePreview: appState.queryWherePreview,
-                    queryWhereExpression: appState.queryWhereExpression,
-                    activeQueryId,
-                    sqlText: activeSqlText
-                }));
-            } catch (error) {
-                // L'avertissement de fermeture reste actif même si le stockage est indisponible.
-            }
-            event.preventDefault();
-            event.returnValue = '';
-        });
 
         // ===== Importation et traitement des fichiers XML =====
         // Sélectionner un fichier XML local
@@ -1603,7 +1934,7 @@
                     const xmlString = await readXmlFile(file, fileProgress);
                     showXmlLoading(`Analyse ${fileIndex + 1}/${files.length} : ${file.name}`, null);
                     const tableMap = await parseXmlInWorker(xmlString);
-                    const result = loadXMLTableMap(tableMap, file.name, false, true);
+                    const result = await loadXMLTableMap(tableMap, file.name, false, true);
                     addedTableNames.push(...result.addedTableNames);
                     existingTableNames.push(...result.existingTableNames);
                 } catch (error) {
@@ -1822,7 +2153,7 @@
         }
 
         // Parser le XML avec DOMParser et peupler l'application
-        function loadXMLFromString(xmlString, fileName, showNotification = true, throwOnError = false) {
+        async function loadXMLFromString(xmlString, fileName, showNotification = true, throwOnError = false) {
             try {
                 const parser = new DOMParser();
                 const xmlDoc = parser.parseFromString(xmlString, "text/xml");
@@ -1852,7 +2183,7 @@
                     tableMap[tagName].push(extractXmlRowData(node));
                 }
 
-                return loadXMLTableMap(tableMap, fileName, showNotification, throwOnError);
+                return await loadXMLTableMap(tableMap, fileName, showNotification, throwOnError);
 
             } catch (err) {
                 console.error(err);
@@ -1862,7 +2193,7 @@
             }
         }
 
-        function loadXMLTableMap(tableMap, fileName, showNotification = true, throwOnError = false) {
+        async function loadXMLTableMap(tableMap, fileName, showNotification = true, throwOnError = false) {
             try {
                 appState.fileName = fileName;
                 document.getElementById('currentProjectTitle').textContent = fileName;
@@ -1894,6 +2225,16 @@
                 renderSvgJoins();
                 updateActionButtonsState();
                 updateStatusBar();
+                if (addedTableNames.length > 0) {
+                    tableDataRevision++;
+                    try {
+                        await clearQueryResultCache();
+                    } catch (error) {
+                        console.error('Impossible d’invalider les résultats mis en cache après import :', error);
+                        reportPersistenceError(error);
+                    }
+                }
+                await persistProjectState();
 
                 if (showNotification) {
                     const details = [];
@@ -2336,6 +2677,7 @@
             refreshNavigationPane();
             renderCanvasTables();
             renderSvgJoins();
+            persistProjectState();
         }
 
         function deleteTableFromProject(tableName) {
@@ -2357,6 +2699,7 @@
 
         function removeTablesFromProject(tableNames) {
             invalidateActiveSqlText();
+            tableDataRevision++;
             const namesToDelete = new Set(tableNames);
             const lowerCaseNames = new Set(tableNames.map(name => name.toLowerCase()));
             if (linkingSource && namesToDelete.has(linkingSource.table)) clearFieldJoinSelection();
@@ -2379,6 +2722,11 @@
             renderSvgJoins();
             updateActionButtonsState();
             updateStatusBar();
+            clearQueryResultCache().catch(error => {
+                console.error('Impossible d’invalider les résultats mis en cache après suppression de table :', error);
+                reportPersistenceError(error);
+            });
+            persistProjectState();
         }
 
         function deleteAllTables() {
@@ -2392,15 +2740,17 @@
             updateStatusBar();
         }
 
-        function clearAppCacheAndFields() {
+        async function clearAppCacheAndFields() {
             if (!confirm('Effacer les tables XML importées, les champs et critères de la requête, toutes les requêtes sauvegardées localement et le brouillon ? Cette action est irréversible.')) return;
 
             try {
-                localStorage.removeItem(QUERY_STORAGE_KEY);
+                await clearLocalDatabase();
                 localStorage.removeItem(QUERY_DRAFT_KEY);
+                localStorage.removeItem(PROJECT_STORAGE_KEY);
+                localStorage.removeItem(QUERY_STORAGE_KEY);
             } catch (error) {
-                console.error('Impossible de supprimer les requêtes et le brouillon du stockage local :', error);
-                alert('Impossible de vider les requêtes sauvegardées du stockage local. Les données de l’application n’ont pas été effacées.');
+                console.error('Impossible de supprimer les données locales IndexedDB :', error);
+                reportPersistenceError(error);
                 return;
             }
 
@@ -2411,7 +2761,7 @@
             closeNewQueryConfirmation();
             closeSqlView();
             closeDataPreviewModal();
-            resetImportedTablesAndQuery();
+            resetImportedTablesAndQuery(false);
             renderSavedQueries();
             savedQueryDefinition = getQueryDefinition();
             updateSaveButtonState();
@@ -2419,8 +2769,9 @@
             document.getElementById('statusBarMode').textContent = 'Cache et champs vidés';
         }
 
-        function resetImportedTablesAndQuery() {
+        function resetImportedTablesAndQuery(persist = true) {
             if (activeQueryWorker) cancelQueryExecution();
+            tableDataRevision++;
             tableSelectionMode = false;
             selectedTableNames.clear();
             if (linkingSource) clearFieldJoinSelection();
@@ -2453,10 +2804,18 @@
             renderSvgJoins();
             replaceChildrenCompat(document.getElementById('tableWorkspaceContainer'));
             document.getElementById('tableWorkspaceTitle').textContent = '';
-            document.getElementById('exportTableWorkspaceButton').disabled = true;
+            const exportTableWorkspaceButton = document.getElementById('exportTableWorkspaceButton');
+            if (exportTableWorkspaceButton) exportTableWorkspaceButton.disabled = true;
             closeDataPreviewModal();
             showQueryDesignTab();
             updateSaveButtonState();
+            if (persist) {
+                clearQueryResultCache().catch(error => {
+                    console.error('Impossible de vider les résultats de requêtes mis en cache :', error);
+                    reportPersistenceError(error);
+                });
+                persistProjectState();
+            }
         }
 
         // Ajouter une table au schéma via modal ou bouton
@@ -3672,9 +4031,9 @@
             closeSqlView();
         }
 
-        function saveSqlView() {
+        async function saveSqlView() {
             updateSqlEditorState();
-            if (saveCurrentQuery() || !document.getElementById('queryNameModal').classList.contains('hidden')) {
+            if (await saveCurrentQuery() || !document.getElementById('queryNameModal').classList.contains('hidden')) {
                 closeSqlView();
             }
         }
@@ -3761,26 +4120,106 @@
             queryTab.className = isQueryTabActive
                 ? 'border border-b-0 border-[#c8c6c4] bg-white px-3 py-1.5 text-xs font-semibold text-red-700'
                 : 'border border-transparent px-3 py-1.5 text-xs text-gray-700 hover:bg-white';
+            const queryViewButtons = document.getElementById('queryViewButtons');
+            queryViewButtons.classList.toggle('hidden', activeWorkspaceTab !== 'query-design');
+            const isDesignView = queryWorkspaceView === 'design';
+            const designButton = document.getElementById('queryDesignViewButton');
+            const resultsButton = document.getElementById('queryResultsViewButton');
+            designButton.setAttribute('aria-pressed', String(isDesignView));
+            resultsButton.setAttribute('aria-pressed', String(!isDesignView));
+            designButton.className = isDesignView
+                ? 'rounded border border-[#8a8886] bg-white px-2 py-1 text-xs font-semibold text-red-700'
+                : 'rounded border border-transparent px-2 py-1 text-xs text-gray-700 hover:bg-white';
+            resultsButton.className = !isDesignView
+                ? 'rounded border border-[#8a8886] bg-white px-2 py-1 text-xs font-semibold text-red-700'
+                : 'rounded border border-transparent px-2 py-1 text-xs text-gray-700 hover:bg-white';
+        }
+
+        function beginWorkspaceTransition(message, showImmediately = false) {
+            const token = ++workspaceTransitionToken;
+            activeWorkspaceTransitionToken = token;
+            const overlay = document.getElementById('workspaceTransitionOverlay');
+            document.getElementById('workspaceTransitionMessage').textContent = message;
+            clearTimeout(workspaceTransitionTimer);
+            if (showImmediately) {
+                overlay.classList.remove('hidden');
+                overlay.classList.add('flex');
+                workspaceTransitionTimer = null;
+                return token;
+            }
+            workspaceTransitionTimer = setTimeout(() => {
+                if (token !== workspaceTransitionToken) return;
+                overlay.classList.remove('hidden');
+                overlay.classList.add('flex');
+            }, 80);
+            return token;
+        }
+
+        function finishWorkspaceTransition(token) {
+            if (token !== workspaceTransitionToken) return;
+            clearTimeout(workspaceTransitionTimer);
+            workspaceTransitionTimer = null;
+            const overlay = document.getElementById('workspaceTransitionOverlay');
+            overlay.classList.add('hidden');
+            overlay.classList.remove('flex');
+            activeWorkspaceTransitionToken = 0;
         }
 
         function showQueryDesignTab() {
+            const previousTable = activeWorkspaceTab !== 'query-design' ? appState.tables[activeWorkspaceTab] : null;
+            const transitionToken = beginWorkspaceTransition('Affichage de la conception...', Boolean(previousTable && previousTable.length >= 5000));
             activeWorkspaceTab = 'query-design';
+            queryWorkspaceView = 'design';
             document.getElementById('erdCanvas').classList.remove('hidden');
             document.getElementById('queryGridPanel').classList.remove('hidden');
             document.getElementById('tableWorkspace').classList.add('hidden');
             document.getElementById('tableWorkspace').classList.remove('flex');
+            document.getElementById('queryResultsWorkspace').classList.add('hidden');
+            document.getElementById('queryResultsWorkspace').classList.remove('flex');
             renderWorkspaceTabs();
+            scheduleProjectStatePersistence();
+            requestAnimationFrame(() => requestAnimationFrame(() => finishWorkspaceTransition(transitionToken)));
+        }
+
+        function showQueryResultsTab() {
+            const transitionToken = beginWorkspaceTransition('Affichage des résultats...');
+            activeWorkspaceTab = 'query-design';
+            queryWorkspaceView = 'results';
+            document.getElementById('erdCanvas').classList.add('hidden');
+            document.getElementById('queryGridPanel').classList.add('hidden');
+            document.getElementById('tableWorkspace').classList.add('hidden');
+            document.getElementById('tableWorkspace').classList.remove('flex');
+            document.getElementById('queryResultsWorkspace').classList.remove('hidden');
+            document.getElementById('queryResultsWorkspace').classList.add('flex');
+            renderWorkspaceTabs();
+            scheduleProjectStatePersistence();
+            if (queryResultsWorkspaceCacheId !== getQueryResultCacheId()) {
+                runQueryPreview('workspace');
+            } else {
+                requestAnimationFrame(() => requestAnimationFrame(() => finishWorkspaceTransition(transitionToken)));
+            }
         }
 
         function showTableTab(tableName) {
             if (!appState.tables[tableName]) return;
+            const tableRows = appState.tables[tableName];
+            const needsTransition = tableRows.length >= 5000;
+            const transitionToken = beginWorkspaceTransition('Chargement de la table...', needsTransition);
             activeWorkspaceTab = tableName;
             document.getElementById('erdCanvas').classList.add('hidden');
             document.getElementById('queryGridPanel').classList.add('hidden');
+            document.getElementById('queryResultsWorkspace').classList.add('hidden');
+            document.getElementById('queryResultsWorkspace').classList.remove('flex');
             document.getElementById('tableWorkspace').classList.remove('hidden');
             document.getElementById('tableWorkspace').classList.add('flex');
-            renderTableWorkspace(tableName);
-            renderWorkspaceTabs();
+            const renderTable = () => {
+                if (transitionToken !== workspaceTransitionToken) return;
+                renderTableWorkspace(tableName);
+                renderWorkspaceTabs();
+                requestAnimationFrame(() => requestAnimationFrame(() => finishWorkspaceTransition(transitionToken)));
+            };
+            if (needsTransition) requestAnimationFrame(() => requestAnimationFrame(renderTable));
+            else renderTable();
         }
 
         function openTableTab(tableName) {
@@ -3961,19 +4400,19 @@
                     menu.appendChild(makeMenuButton('Trier de A à Z', () => {
                         sortState = { columnIndex, direction: 1 };
                         viewport.scrollTop = 0;
-                        renderVisibleRows();
+                        refreshFilteredRows();
                         closeColumnMenu();
                     }));
                     menu.appendChild(makeMenuButton('Trier de Z à A', () => {
                         sortState = { columnIndex, direction: -1 };
                         viewport.scrollTop = 0;
-                        renderVisibleRows();
+                        refreshFilteredRows();
                         closeColumnMenu();
                     }));
                     menu.appendChild(makeMenuButton(`Effacer le filtre dans ${title.textContent}`, () => {
                         columnFilters[columnIndex] = { selectedValues: null, textFilter: null };
                         viewport.scrollTop = 0;
-                        renderVisibleRows();
+                        refreshFilteredRows();
                         closeColumnMenu();
                     }, !hasActiveFilter));
 
@@ -4024,7 +4463,7 @@
                             ? { operator, value: criterion }
                             : null;
                         viewport.scrollTop = 0;
-                        renderVisibleRows();
+                        refreshFilteredRows();
                         closeColumnMenu();
                     });
                     applyTextFilter.className = 'rounded bg-[#b91c1c] px-2 py-1 text-white hover:bg-[#991b1b]';
@@ -4120,7 +4559,7 @@
                             ? null
                             : nextSelectedValues;
                         viewport.scrollTop = 0;
-                        renderVisibleRows();
+                        refreshFilteredRows();
                         closeColumnMenu();
                     });
                     applyValues.className = 'rounded bg-[#b91c1c] px-4 py-1 text-white hover:bg-[#991b1b]';
@@ -4195,7 +4634,73 @@
             viewport.appendChild(table);
             replaceChildrenCompat(container, viewport);
 
+            let filteredIndices = [];
+            let renderedFirstRow = -1;
+            let renderedLastRow = -1;
+            let renderFrame = null;
+            const renderedRows = [];
+
             const renderVisibleRows = () => {
+                if (renderFrame !== null) return;
+                renderFrame = requestAnimationFrame(() => {
+                    renderFrame = null;
+                    const firstRow = Math.max(0, Math.floor(viewport.scrollTop / rowHeight) - overscan);
+                    const lastRow = Math.min(filteredIndices.length,
+                        Math.ceil((viewport.scrollTop + viewport.clientHeight) / rowHeight) + overscan);
+                    if (firstRow === renderedFirstRow && lastRow === renderedLastRow) return;
+
+                    renderedFirstRow = firstRow;
+                    renderedLastRow = lastRow;
+                    visibleRows.style.transform = `translateY(${firstRow * rowHeight}px)`;
+
+                    const visibleRowCount = lastRow - firstRow;
+                    while (renderedRows.length < visibleRowCount) {
+                        const row = document.createElement('div');
+                        row.className = 'datasheet-row grid h-7 border-b border-gray-200';
+                        row.style.gridTemplateColumns = getColumnTemplate();
+                        const cells = columns.map(() => {
+                            const cell = document.createElement('div');
+                            cell.className = 'datasheet-cell overflow-hidden text-ellipsis whitespace-nowrap border-r border-gray-200 p-2 text-gray-800';
+                            row.appendChild(cell);
+                            return cell;
+                        });
+                        row.addEventListener('click', () => {
+                            if (window.getSelection()?.toString()) return;
+                            const previousRow = visibleRows.querySelector('[aria-selected="true"]');
+                            if (previousRow) previousRow.setAttribute('aria-selected', 'false');
+                            selectedRowIndex = Number(row.dataset.sourceRowIndex);
+                            row.setAttribute('aria-selected', 'true');
+                            viewport.focus({ preventScroll: true });
+                        });
+                        renderedRows.push({ element: row, cells, sourceRowIndex: -1 });
+                        visibleRows.appendChild(row);
+                    }
+
+                    renderedRows.forEach((renderedRow, rowOffset) => {
+                        const rowIndex = firstRow + rowOffset;
+                        if (rowOffset >= visibleRowCount) {
+                            renderedRow.element.classList.add('hidden');
+                            return;
+                        }
+                        renderedRow.element.classList.remove('hidden');
+                        const sourceRowIndex = filteredIndices[rowIndex];
+                        renderedRow.element.className = `datasheet-row grid h-7 border-b border-gray-200 ${rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'} hover:bg-blue-50`;
+                        renderedRow.element.setAttribute('aria-selected', String(sourceRowIndex === selectedRowIndex));
+                        renderedRow.element.style.gridTemplateColumns = getColumnTemplate();
+                        if (renderedRow.sourceRowIndex === sourceRowIndex) return;
+                        renderedRow.sourceRowIndex = sourceRowIndex;
+                        renderedRow.element.dataset.sourceRowIndex = String(sourceRowIndex);
+                        columns.forEach((column, columnIndex) => {
+                            const value = getCellValue(sourceRowIndex, column);
+                            const text = value === undefined || value === null ? '' : String(value);
+                            renderedRow.cells[columnIndex].textContent = text;
+                            renderedRow.cells[columnIndex].title = text;
+                        });
+                    });
+                });
+            };
+
+            const refreshFilteredRows = () => {
                 filterButtons.forEach((button, columnIndex) => {
                     const isFiltered = columnFilters[columnIndex].selectedValues !== null || columnFilters[columnIndex].textFilter !== null;
                     const isSorted = sortState.columnIndex === columnIndex;
@@ -4209,7 +4714,7 @@
                             ? '<i class="fa-solid fa-filter-circle-xmark"></i>'
                             : '<i class="fa-solid fa-filter"></i>';
                 });
-                const filteredIndices = [];
+                filteredIndices = [];
                 rows.forEach((row, rowIndex) => {
                     const matches = columns.every((column, columnIndex) => matchesColumnFilter(rowIndex, columnIndex));
                     if (matches) filteredIndices.push(rowIndex);
@@ -4227,34 +4732,9 @@
                 body.style.height = `${Math.max(rowHeight, filteredIndices.length * rowHeight)}px`;
                 emptyState.classList.toggle('hidden', filteredIndices.length > 0);
                 if (onFilterChange) onFilterChange(filteredIndices);
-
-                const firstRow = Math.max(0, Math.floor(viewport.scrollTop / rowHeight) - overscan);
-                const lastRow = Math.min(filteredIndices.length, Math.ceil((viewport.scrollTop + viewport.clientHeight) / rowHeight) + overscan);
-                visibleRows.style.transform = `translateY(${firstRow * rowHeight}px)`;
-                replaceChildrenCompat(visibleRows);
-
-                for (let rowIndex = firstRow; rowIndex < lastRow; rowIndex++) {
-                    const sourceRowIndex = filteredIndices[rowIndex];
-                    const row = document.createElement('div');
-                    row.className = `datasheet-row grid h-7 border-b border-gray-200 ${rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'} hover:bg-blue-50`;
-                    row.setAttribute('aria-selected', String(sourceRowIndex === selectedRowIndex));
-                    row.style.gridTemplateColumns = getColumnTemplate();
-                    columns.forEach(column => {
-                        const cell = document.createElement('div');
-                        cell.className = 'datasheet-cell overflow-hidden text-ellipsis whitespace-nowrap border-r border-gray-200 p-2 text-gray-800';
-                        const value = getCellValue(sourceRowIndex, column);
-                        cell.textContent = value === undefined || value === null ? '' : String(value);
-                        cell.title = cell.textContent;
-                        row.appendChild(cell);
-                    });
-                    row.addEventListener('click', () => {
-                        if (window.getSelection()?.toString()) return;
-                        selectedRowIndex = sourceRowIndex;
-                        viewport.focus({ preventScroll: true });
-                        renderVisibleRows();
-                    });
-                    visibleRows.appendChild(row);
-                }
+                renderedFirstRow = -1;
+                renderedLastRow = -1;
+                renderVisibleRows();
             };
 
             viewport.addEventListener('copy', event => {
@@ -4274,7 +4754,7 @@
             } else {
                 window.addEventListener('resize', renderVisibleRows);
             }
-            requestAnimationFrame(renderVisibleRows);
+            refreshFilteredRows();
         }
 
         function renderTableWorkspace(tableName) {
@@ -4284,6 +4764,8 @@
             const columns = Object.keys(tableRows[0] || {}).map(field => ({ field, table: tableName, alias: '' }));
             lastQueryResults = tableRows;
             lastQueryResultColumns = columns;
+            lastQueryResultCacheId = null;
+            persistProjectState();
             updateActionButtonsState();
 
             const container = document.getElementById('tableWorkspaceContainer');
@@ -4300,14 +4782,14 @@
         }
 
         // Exécuter et afficher les résultats de la requête (Datasheet View)
-        function runQueryPreview() {
-            if (activeQueryWorker) return;
+        async function runQueryPreview(displayTarget = 'modal') {
+            if (activeQueryWorker || queryExecutionPending) return;
             let whereExpression = null;
             if (activeSqlText) {
                 try {
                     whereExpression = parseSheetQuerySql(activeSqlText).whereExpression;
                 } catch (error) {
-                    showQueryExecutionError(`Cette requête SQL ne peut pas être exécutée : ${error.message}`);
+                    showQueryExecutionError(`Cette requête SQL ne peut pas être exécutée : ${error.message}`, displayTarget);
                     return;
                 }
             } else if (appState.queryWherePreview) {
@@ -4320,18 +4802,61 @@
             const requiredTables = new Set(requiredTableNames.filter(Boolean));
             const missingTables = [...requiredTables].filter(tableName => !appState.tables[tableName]);
             if (missingTables.length > 0) {
-                showQueryExecutionError(`Importez les tables requises avant d’exécuter la requête : ${missingTables.join(', ')}.`);
+                showQueryExecutionError(`Importez les tables requises avant d’exécuter la requête : ${missingTables.join(', ')}.`, displayTarget);
                 return;
             }
+            const resultCacheId = getQueryResultCacheId();
+            queryExecutionPending = true;
+            const executionToken = ++queryExecutionToken;
             const overlay = document.getElementById('queryExecutionOverlay');
             const executeButton = document.getElementById('executeQueryButton');
             const executionMessage = document.getElementById('queryExecutionMessage');
+            const cancelButton = overlay.querySelector('button');
+            const finishExecution = () => {
+                if (executionToken !== queryExecutionToken) return;
+                overlay.classList.add('hidden');
+                overlay.classList.remove('flex');
+                executeButton.disabled = false;
+                queryExecutionPending = false;
+            };
             overlay.classList.remove('hidden');
             overlay.classList.add('flex');
             executeButton.disabled = true;
+            cancelButton.disabled = true;
+            executionMessage.textContent = 'Préparation de l’exécution...';
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            if (executionToken !== queryExecutionToken) return;
+
+            let cachedResult = null;
+            try {
+                cachedResult = await readLocalStore('queryResults', 'get', resultCacheId);
+            } catch (error) {
+                console.error('Impossible de lire les résultats sauvegardés dans IndexedDB :', error);
+                reportPersistenceError(error);
+            }
+            if (executionToken !== queryExecutionToken) return;
+            if (resultCacheId !== getQueryResultCacheId()) {
+                finishExecution();
+                return runQueryPreview(displayTarget);
+            }
+            if (cachedResult && Array.isArray(cachedResult.results) && Array.isArray(cachedResult.columns)) {
+                executionMessage.textContent = 'Affichage des résultats sauvegardés...';
+                try {
+                    await renderQueryResults(cachedResult.results, cachedResult.columns, resultCacheId, displayTarget, false);
+                    document.getElementById('statusBarMode').textContent = 'Résultats sauvegardés réutilisés';
+                } catch (error) {
+                    console.error('Impossible d’afficher les résultats sauvegardés :', error);
+                    showQueryExecutionError(`Impossible d’afficher les résultats sauvegardés : ${error.message || String(error)}`, displayTarget);
+                } finally {
+                    finishExecution();
+                }
+                return;
+            }
             executionMessage.textContent = 'Exécution de la requête...';
+            cancelButton.disabled = false;
 
             setTimeout(() => {
+                if (executionToken !== queryExecutionToken) return;
                 const startedAt = performance.now();
                 const workerSource = `
                     let appState = null;
@@ -4359,44 +4884,65 @@
                     };
                 `;
                 const workerUrl = URL.createObjectURL(new Blob([workerSource], { type: 'application/javascript' }));
-                activeQueryWorker = new Worker(workerUrl);
+                activeQueryWorkerUrl = workerUrl;
+                try {
+                    activeQueryWorker = new Worker(workerUrl);
+                } catch (error) {
+                    URL.revokeObjectURL(workerUrl);
+                    activeQueryWorkerUrl = null;
+                    finishExecution();
+                    showQueryExecutionError(`Impossible de démarrer le moteur de requête : ${error.message || String(error)}`, displayTarget);
+                    return;
+                }
 
-                const finish = () => {
+                const releaseWorker = () => {
                     clearTimeout(queryExecutionTimer);
                     queryExecutionTimer = null;
                     if (activeQueryWorker) activeQueryWorker.terminate();
                     activeQueryWorker = null;
-                    URL.revokeObjectURL(workerUrl);
-                    overlay.classList.add('hidden');
-                    overlay.classList.remove('flex');
-                    executeButton.disabled = false;
+                    if (activeQueryWorkerUrl) URL.revokeObjectURL(activeQueryWorkerUrl);
+                    activeQueryWorkerUrl = null;
+                };
+                const finish = () => {
+                    releaseWorker();
+                    finishExecution();
                 };
 
-                activeQueryWorker.onmessage = event => {
+                activeQueryWorker.onmessage = async event => {
+                    if (executionToken !== queryExecutionToken) return;
                     const elapsedMs = performance.now() - startedAt;
-                    const message = event.data.type === 'error'
-                        ? `Erreur lors de l'exécution de la requête : ${event.data.message}`
-                        : null;
-                    finish();
-                    if (message) {
-                        showQueryExecutionError(message);
+                    if (event.data.type === 'error') {
+                        finish();
+                        showQueryExecutionError(`Erreur lors de l'exécution de la requête : ${event.data.message}`, displayTarget);
                         return;
                     }
-                    renderQueryResults(event.data.results);
-                    document.getElementById('statusBarMode').textContent = elapsedMs >= 1000
-                        ? `Requête terminée en ${(elapsedMs / 1000).toFixed(1)} s`
-                        : 'Requête terminée';
-                    if (elapsedMs >= 1000) {
-                        document.getElementById('dataPreviewCount').textContent += ` en ${(elapsedMs / 1000).toFixed(1)} s`;
+                    cancelButton.disabled = true;
+                    executionMessage.textContent = 'Affichage des résultats...';
+                    releaseWorker();
+                    try {
+                        await renderQueryResults(event.data.results, null, resultCacheId, displayTarget);
+                        document.getElementById('statusBarMode').textContent = elapsedMs >= 1000
+                            ? `Requête terminée en ${(elapsedMs / 1000).toFixed(1)} s`
+                            : 'Requête terminée';
+                        if (elapsedMs >= 1000) {
+                            document.getElementById('dataPreviewCount').textContent += ` en ${(elapsedMs / 1000).toFixed(1)} s`;
+                        }
+                    } catch (error) {
+                        console.error('Impossible d’afficher les résultats de la requête :', error);
+                        showQueryExecutionError(`Impossible d’afficher les résultats de la requête : ${error.message || String(error)}`, displayTarget);
+                    } finally {
+                        finishExecution();
                     }
                 };
                 activeQueryWorker.onerror = event => {
+                    if (executionToken !== queryExecutionToken) return;
                     finish();
-                    showQueryExecutionError(`Erreur lors de l'exécution de la requête : ${event.message || 'Worker indisponible.'}`);
+                    showQueryExecutionError(`Erreur lors de l'exécution de la requête : ${event.message || 'Worker indisponible.'}`, displayTarget);
                 };
                 queryExecutionTimer = setTimeout(() => {
+                    if (executionToken !== queryExecutionToken) return;
                     finish();
-                    showQueryExecutionError('Exécution arrêtée automatiquement : durée supérieure à 30 secondes. Vérifiez les jointures ou ajoutez un critère.');
+                    showQueryExecutionError('Exécution arrêtée automatiquement : durée supérieure à 30 secondes. Vérifiez les jointures ou ajoutez un critère.', displayTarget);
                 }, QUERY_EXECUTION_TIMEOUT_MS);
                 activeQueryWorker.postMessage({
                     type: 'execute',
@@ -4412,37 +4958,55 @@
         }
 
         function cancelQueryExecution() {
-            if (!activeQueryWorker) return;
+            if (!queryExecutionPending) return;
+            queryExecutionToken++;
             clearTimeout(queryExecutionTimer);
             queryExecutionTimer = null;
-            activeQueryWorker.terminate();
+            if (activeQueryWorker) activeQueryWorker.terminate();
             activeQueryWorker = null;
+            if (activeQueryWorkerUrl) URL.revokeObjectURL(activeQueryWorkerUrl);
+            activeQueryWorkerUrl = null;
             const overlay = document.getElementById('queryExecutionOverlay');
             overlay.classList.add('hidden');
             overlay.classList.remove('flex');
+            queryExecutionPending = false;
             document.getElementById('executeQueryButton').disabled = false;
             document.getElementById('statusBarMode').textContent = 'Exécution arrêtée';
+            finishWorkspaceTransition(activeWorkspaceTransitionToken);
         }
 
-        function showQueryExecutionError(message) {
-            const container = document.getElementById('dataPreviewContainer');
+        function showQueryExecutionError(message, displayTarget = 'modal') {
+            const isWorkspace = displayTarget === 'workspace';
+            if (isWorkspace) {
+                queryResultsWorkspaceCacheId = null;
+                finishWorkspaceTransition(activeWorkspaceTransitionToken);
+            }
+            const container = document.getElementById(isWorkspace ? 'queryResultsWorkspaceContainer' : 'dataPreviewContainer');
             container.innerHTML = '';
             const errorMessage = document.createElement('div');
             errorMessage.className = 'mx-auto max-w-3xl border border-red-300 bg-red-50 p-4 text-red-800';
             errorMessage.textContent = message;
             container.appendChild(errorMessage);
-            document.getElementById('dataPreviewCount').textContent = 'Échec de l’exécution';
+            document.getElementById(isWorkspace ? 'queryResultsWorkspaceCount' : 'dataPreviewCount').textContent = 'Échec de l’exécution';
             document.getElementById('statusBarMode').textContent = 'Erreur d’exécution';
-            document.getElementById('dataPreviewModal').classList.remove('hidden');
+            if (!isWorkspace) document.getElementById('dataPreviewModal').classList.remove('hidden');
         }
 
-        function renderQueryResults(results) {
-            const container = document.getElementById('dataPreviewContainer');
+        async function renderQueryResults(results, restoredColumns = null, resultCacheId = null, displayTarget = 'modal', persistResult = true) {
+            const isWorkspace = displayTarget === 'workspace';
+            const container = document.getElementById(isWorkspace ? 'queryResultsWorkspaceContainer' : 'dataPreviewContainer');
+            const count = document.getElementById(isWorkspace ? 'queryResultsWorkspaceCount' : 'dataPreviewCount');
+            if (isWorkspace) queryResultsWorkspaceCacheId = null;
             container.innerHTML = '';
-            document.getElementById('dataPreviewTitle').innerHTML = '<i class="fa-solid fa-table mr-2"></i> Feuille de Données (Datasheet View)';
+            if (isWorkspace) {
+                document.getElementById('queryResultsWorkspaceTitle').textContent =
+                    `Résultats : ${savedQueries.find(query => query.id === activeQueryId)?.name || activeSheetQuery?.name || 'Requête'}`;
+            } else {
+                document.getElementById('dataPreviewTitle').innerHTML = '<i class="fa-solid fa-table mr-2"></i> Feuille de Données (Datasheet View)';
+            }
 
             // Récupérer les colonnes actives cochées dans la grille
-            let activeColumns = appState.queryGridRows
+            let activeColumns = restoredColumns || appState.queryGridRows
                 .map((row, queryRowIndex) => ({ row, queryRowIndex }))
                 .filter(({ row }) => row.show && row.field)
                 .map(({ row, queryRowIndex }) => ({
@@ -4461,13 +5025,27 @@
             }
             lastQueryResults = results;
             lastQueryResultColumns = activeColumns;
+            lastQueryResultCacheId = resultCacheId;
+            if (persistResult && resultCacheId) {
+                try {
+                    await saveQueryResult(resultCacheId, results, activeColumns);
+                } catch (error) {
+                    console.error('Impossible de sauvegarder les résultats de la requête :', error);
+                    reportPersistenceError(error);
+                }
+            }
+            scheduleProjectStatePersistence();
             updateActionButtonsState();
-            document.getElementById('exportQueryResultButton').disabled = false;
+            if (!isWorkspace) document.getElementById('exportQueryResultButton').disabled = false;
 
             if (results.length === 0) {
                 container.innerHTML = '<div class="text-gray-500 text-center py-8 italic">Aucun enregistrement ne correspond aux critères de la requête.</div>';
-                document.getElementById('dataPreviewCount').textContent = '0 enregistrement(s)';
-                document.getElementById('dataPreviewModal').classList.remove('hidden');
+                count.textContent = '0 enregistrement(s)';
+                if (isWorkspace) {
+                    queryResultsWorkspaceCacheId = resultCacheId;
+                    finishWorkspaceTransition(activeWorkspaceTransitionToken);
+                }
+                if (!isWorkspace) document.getElementById('dataPreviewModal').classList.remove('hidden');
                 return;
             }
 
@@ -4477,11 +5055,11 @@
                 return row[key] !== undefined ? row[key] : row[column.field];
             }, filteredIndices => {
                 lastQueryResults = filteredIndices.map(rowIndex => results[rowIndex]);
-                const count = document.getElementById('dataPreviewCount');
+                scheduleProjectStatePersistence();
                 count.textContent = filteredIndices.length === results.length
                     ? `${results.length} enregistrement(s) trouvé(s)`
                     : `${filteredIndices.length} / ${results.length} enregistrement(s)`;
-                document.getElementById('exportQueryResultButton').disabled = filteredIndices.length === 0;
+                if (!isWorkspace) document.getElementById('exportQueryResultButton').disabled = filteredIndices.length === 0;
             }, (columnIndex, nextTitle) => {
                 if (!prepareResultLayoutChange()) return;
                 const queryRowIndex = activeColumns[columnIndex].queryRowIndex;
@@ -4490,7 +5068,7 @@
                 appState.queryGridRows[queryRowIndex].alias = nextTitle;
                 renderQueryGrid();
                 updateSaveButtonState();
-                renderQueryResults(results);
+                renderQueryResults(results, null, null, displayTarget);
             }, (sourceIndex, targetIndex) => {
                 if (!prepareResultLayoutChange()) return;
                 if (sourceIndex === undefined) {
@@ -4505,7 +5083,7 @@
                 appState.queryGridRows.splice(targetRowIndex > sourceRowIndex ? targetRowIndex - 1 : targetRowIndex, 0, movedRow);
                 renderQueryGrid();
                 updateSaveButtonState();
-                renderQueryResults(results);
+                renderQueryResults(results, null, null, displayTarget);
             }, () => {
                 if (!prepareResultLayoutChange()) return;
                 activeColumns.forEach(column => {
@@ -4515,7 +5093,11 @@
                 });
                 updateSaveButtonState();
             });
-            document.getElementById('dataPreviewModal').classList.remove('hidden');
+            if (isWorkspace) {
+                queryResultsWorkspaceCacheId = resultCacheId;
+                finishWorkspaceTransition(activeWorkspaceTransitionToken);
+            }
+            if (!isWorkspace) document.getElementById('dataPreviewModal').classList.remove('hidden');
         }
 
         async function exportCurrentContextToExcel() {
@@ -4784,7 +5366,7 @@
             const requestFullscreen = element.requestFullscreen || element.webkitRequestFullscreen || element.msRequestFullscreen;
             if (requestFullscreen) requestFullscreen.call(element);
         }
-        function closeWindow() {
+        async function closeWindow() {
             if (getQueryDefinition() !== savedQueryDefinition) {
                 if (confirm('Enregistrer les modifications avant de quitter ?')) {
                     if (!savedQueries.some(query => query.id === activeQueryId)) {
@@ -4792,7 +5374,7 @@
                         openQueryNameModal();
                         return;
                     }
-                    if (!saveCurrentQuery()) return;
+                    if (!await saveCurrentQuery()) return;
                 } else if (!confirm('Quitter sans enregistrer les modifications ?')) {
                     return;
                 } else {
