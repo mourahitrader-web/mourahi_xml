@@ -673,7 +673,7 @@
                         index += identifier[0].length;
                         continue;
                     }
-                    const operator = expression.slice(index).match(/^(?:<>|!=|<=|>=|[=<>])/);
+                    const operator = expression.slice(index).match(/^(?:<>|!=|<=|>=|[=<>]|&)/);
                     if (operator) {
                         tokens.push({ type: 'operator', value: operator[0] });
                         index += operator[0].length;
@@ -733,8 +733,16 @@
                     }
                     return condition;
                 };
+                const parseConcatenation = () => {
+                    let value = parseValue();
+                    while (tokens[position] && tokens[position].type === 'operator' && tokens[position].value === '&') {
+                        position++;
+                        value = { type: 'concat', left: value, right: parseValue() };
+                    }
+                    return value;
+                };
                 const parseExpression = () => {
-                    if (!peek('IIF')) return parseValue();
+                    if (!peek('IIF')) return parseConcatenation();
                     position++;
                     expect('(');
                     const condition = parseCondition();
@@ -743,7 +751,12 @@
                     expect(',');
                     const alternate = parseExpression();
                     expect(')');
-                    return { type: 'iif', condition, consequent, alternate };
+                    let value = { type: 'iif', condition, consequent, alternate };
+                    while (tokens[position] && tokens[position].type === 'operator' && tokens[position].value === '&') {
+                        position++;
+                        value = { type: 'concat', left: value, right: parseValue() };
+                    }
+                    return value;
                 };
 
                 const result = parseExpression();
@@ -3246,6 +3259,7 @@
                     return row[key] !== undefined ? row[key] : row[node.field];
                 }
                 if (node.type === 'or') return Boolean(evaluate(node.left)) || Boolean(evaluate(node.right));
+                if (node.type === 'concat') return `${evaluate(node.left) ?? ''}${evaluate(node.right) ?? ''}`;
                 if (node.type === 'iif') return evaluate(node.condition) ? evaluate(node.consequent) : evaluate(node.alternate);
                 if (node.type === 'compare') {
                     const leftValue = evaluate(node.left);
