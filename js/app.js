@@ -440,7 +440,7 @@
                     activeSqlText = typeof snapshot.activeSqlText === 'string' ? snapshot.activeSqlText : null;
                     openTableTabs = Array.isArray(snapshot.openTableTabs) ? snapshot.openTableTabs : [];
                     activeWorkspaceTab = snapshot.activeWorkspaceTab || 'query-design';
-                    queryWorkspaceView = snapshot.queryWorkspaceView === 'results' ? 'results' : 'design';
+                    queryWorkspaceView = ['results', 'sql'].includes(snapshot.queryWorkspaceView) ? snapshot.queryWorkspaceView : 'design';
                     tableDataRevision = Number.isInteger(snapshot.tableDataRevision) ? snapshot.tableDataRevision : 0;
                     lastQueryResults = Array.isArray(snapshot.lastQueryResults) ? snapshot.lastQueryResults : [];
                     lastQueryResultColumns = Array.isArray(snapshot.lastQueryResultColumns) ? snapshot.lastQueryResultColumns : [];
@@ -459,6 +459,8 @@
                         showTableTab(activeWorkspaceTab);
                     } else if (queryWorkspaceView === 'results') {
                         showQueryResultsTab();
+                    } else if (queryWorkspaceView === 'sql') {
+                        showQuerySqlTab();
                     } else {
                         showQueryDesignTab();
                     }
@@ -1457,6 +1459,7 @@
             appState.queryWherePreview = '';
             appState.queryWhereExpression = null;
             renderQueryGrid();
+            if (queryWorkspaceView === 'sql') renderQuerySqlWorkspace();
             isNewQueryDraft = !activeQueryId && !activeSheetQuery;
             updateSqlButtonState();
             updateSaveButtonState();
@@ -4029,6 +4032,7 @@
             updateSqlButtonState();
             updateSaveButtonState();
             updateActionButtonsState();
+            if (queryWorkspaceView === 'sql') renderQuerySqlWorkspace();
             document.getElementById('statusBarMode').textContent = 'Requête SQL appliquée';
             closeSqlView();
         }
@@ -4084,7 +4088,7 @@
         }
 
         function closeQueryDesignTab() {
-            if (queryWorkspaceView === 'results') showQueryDesignTab();
+            if (queryWorkspaceView !== 'design') showQueryDesignTab();
             startNewQuery();
         }
 
@@ -4128,12 +4132,17 @@
             const isDesignView = queryWorkspaceView === 'design';
             const designButton = document.getElementById('queryDesignViewButton');
             const resultsButton = document.getElementById('queryResultsViewButton');
+            const sqlButton = document.getElementById('querySqlViewButton');
             designButton.setAttribute('aria-pressed', String(isDesignView));
-            resultsButton.setAttribute('aria-pressed', String(!isDesignView));
+            resultsButton.setAttribute('aria-pressed', String(queryWorkspaceView === 'results'));
+            sqlButton.setAttribute('aria-pressed', String(queryWorkspaceView === 'sql'));
             designButton.className = isDesignView
                 ? 'rounded border border-[#8a8886] bg-white px-2 py-1 text-xs font-semibold text-red-700'
                 : 'rounded border border-transparent px-2 py-1 text-xs text-gray-700 hover:bg-white';
-            resultsButton.className = !isDesignView
+            resultsButton.className = queryWorkspaceView === 'results'
+                ? 'rounded border border-[#8a8886] bg-white px-2 py-1 text-xs font-semibold text-red-700'
+                : 'rounded border border-transparent px-2 py-1 text-xs text-gray-700 hover:bg-white';
+            sqlButton.className = queryWorkspaceView === 'sql'
                 ? 'rounded border border-[#8a8886] bg-white px-2 py-1 text-xs font-semibold text-red-700'
                 : 'rounded border border-transparent px-2 py-1 text-xs text-gray-700 hover:bg-white';
         }
@@ -4177,6 +4186,8 @@
             document.getElementById('tableWorkspace').classList.remove('flex');
             document.getElementById('queryResultsWorkspace').classList.add('hidden');
             document.getElementById('queryResultsWorkspace').classList.remove('flex');
+            document.getElementById('querySqlWorkspace').classList.add('hidden');
+            document.getElementById('querySqlWorkspace').classList.remove('flex');
             renderWorkspaceTabs();
             scheduleProjectStatePersistence();
             requestAnimationFrame(() => requestAnimationFrame(() => finishWorkspaceTransition(transitionToken)));
@@ -4190,6 +4201,8 @@
             document.getElementById('queryGridPanel').classList.add('hidden');
             document.getElementById('tableWorkspace').classList.add('hidden');
             document.getElementById('tableWorkspace').classList.remove('flex');
+            document.getElementById('querySqlWorkspace').classList.add('hidden');
+            document.getElementById('querySqlWorkspace').classList.remove('flex');
             document.getElementById('queryResultsWorkspace').classList.remove('hidden');
             document.getElementById('queryResultsWorkspace').classList.add('flex');
             renderWorkspaceTabs();
@@ -4199,6 +4212,30 @@
             } else {
                 requestAnimationFrame(() => requestAnimationFrame(() => finishWorkspaceTransition(transitionToken)));
             }
+        }
+
+        function showQuerySqlTab() {
+            const transitionToken = beginWorkspaceTransition('Affichage du SQL...');
+            activeWorkspaceTab = 'query-design';
+            queryWorkspaceView = 'sql';
+            document.getElementById('erdCanvas').classList.add('hidden');
+            document.getElementById('queryGridPanel').classList.add('hidden');
+            document.getElementById('tableWorkspace').classList.add('hidden');
+            document.getElementById('tableWorkspace').classList.remove('flex');
+            document.getElementById('queryResultsWorkspace').classList.add('hidden');
+            document.getElementById('queryResultsWorkspace').classList.remove('flex');
+            document.getElementById('querySqlWorkspace').classList.remove('hidden');
+            document.getElementById('querySqlWorkspace').classList.add('flex');
+            renderQuerySqlWorkspace();
+            renderWorkspaceTabs();
+            scheduleProjectStatePersistence();
+            requestAnimationFrame(() => requestAnimationFrame(() => finishWorkspaceTransition(transitionToken)));
+        }
+
+        function renderQuerySqlWorkspace() {
+            const activeQuery = savedQueries.find(query => query.id === activeQueryId) || activeSheetQuery;
+            document.getElementById('querySqlWorkspaceTitle').textContent = `SQL : ${activeQuery?.name || 'Requête'}`;
+            document.getElementById('querySqlWorkspaceText').textContent = activeSqlText || generateQuerySql();
         }
 
         function showTableTab(tableName) {
@@ -4213,6 +4250,8 @@
             document.getElementById('queryGridPanel').classList.add('hidden');
             document.getElementById('queryResultsWorkspace').classList.add('hidden');
             document.getElementById('queryResultsWorkspace').classList.remove('flex');
+            document.getElementById('querySqlWorkspace').classList.add('hidden');
+            document.getElementById('querySqlWorkspace').classList.remove('flex');
             document.getElementById('tableWorkspace').classList.remove('hidden');
             document.getElementById('tableWorkspace').classList.add('flex');
             const renderTable = () => {

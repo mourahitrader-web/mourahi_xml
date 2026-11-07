@@ -142,6 +142,9 @@
                     <button id="queryResultsViewButton" type="button" onclick="showQueryResultsTab()" class="rounded border border-transparent px-2 py-1 text-xs text-gray-700 hover:bg-white" aria-pressed="false">
                         <i class="fa-solid fa-table-list mr-1"></i>Vue table
                     </button>
+                    <button id="querySqlViewButton" type="button" onclick="showQuerySqlTab()" class="rounded border border-transparent px-2 py-1 text-xs text-gray-700 hover:bg-white" aria-pressed="false">
+                        <i class="fa-solid fa-code mr-1"></i>Vue SQL
+                    </button>
                 </div>
             </div>
 
@@ -184,6 +187,12 @@
                     <span id="queryResultsWorkspaceCount" class="text-gray-600">0 enregistrement(s)</span>
                 </div>
                 <div id="queryResultsWorkspaceContainer" class="flex-1 min-h-0 overflow-auto p-4"></div>
+            </div>
+            <div id="querySqlWorkspace" class="hidden flex-1 min-h-0 flex-col overflow-hidden bg-[#1f2937]" role="tabpanel" aria-label="Requête SQL">
+                <div class="flex items-center justify-between border-b border-gray-600 bg-gray-800 px-3 py-1.5">
+                    <span id="querySqlWorkspaceTitle" class="font-semibold text-gray-100">SQL : Requête</span>
+                </div>
+                <pre id="querySqlWorkspaceText" class="flex-1 min-h-0 overflow-auto whitespace-pre-wrap p-4 font-mono text-sm text-gray-100"></pre>
             </div>
 
             <div id="workspaceTransitionOverlay" class="absolute inset-0 z-[45] hidden items-center justify-center bg-white/70" role="status" aria-live="polite">
@@ -405,7 +414,7 @@
     </div>
 
     <script src="js/compatibility.js"></script>
-    <script src="js/app.js?cache=bigsi-xml-v37"></script>
+    <script src="js/app.js?cache=bigsi-xml-v38"></script>
     <script>
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function () {
