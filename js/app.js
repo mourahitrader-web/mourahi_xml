@@ -988,7 +988,6 @@
 
             const hasMixedAndOr = /\bAND\b/i.test(whereText) && /\bOR\b/i.test(whereText);
             const hasWhereFunctions = /\b(?:TRIM|NZ)\s*\(/i.test(whereText);
-            const queryWherePreview = hasMixedAndOr || hasWhereFunctions ? whereText : '';
             let whereExpression = null;
             if (whereText) {
                 try {
@@ -998,15 +997,18 @@
                 }
             }
             const conditions = whereText ? splitSqlTopLevel(whereText, 'AND') : [];
-            if (!hasMixedAndOr && !hasWhereFunctions) {
-                conditions.forEach((condition, conditionIndex) => {
+            const residualConditions = [];
+            conditions.forEach((condition, conditionIndex) => {
+                try {
                     const alternatives = splitSqlTopLevel(stripOuterSqlParentheses(condition), 'OR').map(parseCondition);
                     const hasDifferentFields = alternatives.some(item =>
                         item.table !== alternatives[0].table || item.field !== alternatives[0].field
                     );
                     const orGroup = hasDifferentFields ? `where-or-${conditionIndex}` : null;
+                    const rowsByField = new Map();
                     alternatives.forEach(field => {
-                        let row = queryRows.find(item =>
+                        const fieldKey = `${field.table.toLowerCase()}.${field.field.toLowerCase()}`;
+                        let row = rowsByField.get(fieldKey) || queryRows.find(item =>
                             item.table === field.table
                             && item.field === field.field
                             && (item.criteriaOrGroup || null) === orGroup
@@ -1027,11 +1029,25 @@
                             };
                             queryRows.push(row);
                         }
+                        rowsByField.set(fieldKey, row);
                         row.criteria = row.criteria
                             ? `${row.criteria} OR ${field.criterion}`
                             : field.criterion;
                     });
-                });
+                } catch (error) {
+                    residualConditions.push(condition);
+                }
+            });
+            const queryWherePreview = residualConditions.join(' AND ');
+            if (queryWherePreview) {
+                try {
+                    whereExpression = parseWhereExpression(queryWherePreview);
+                } catch (error) {
+                    if (hasMixedAndOr || hasWhereFunctions) throw error;
+                    whereExpression = null;
+                }
+            } else {
+                whereExpression = null;
             }
 
             if (groupText) {
@@ -1463,11 +1479,17 @@
             activeSqlText = typeof query.sqlText === 'string' ? query.sqlText : null;
             appState.queryWherePreview = query.queryWherePreview || '';
             appState.queryWhereExpression = query.queryWhereExpression || null;
-            if ((!appState.queryWherePreview || !appState.queryWhereExpression) && activeSqlText) {
+            if (activeSqlText) {
                 try {
                     const parsed = parseSheetQuerySql(activeSqlText);
-                    if (!appState.queryWherePreview) appState.queryWherePreview = parsed.queryWherePreview;
-                    if (!appState.queryWhereExpression) appState.queryWhereExpression = parsed.whereExpression;
+                    appState.queryGridRows = parsed.queryGridRows.map(parsedRow => {
+                        const savedRow = appState.queryGridRows.find(row =>
+                            row.table === parsedRow.table && row.field === parsedRow.field
+                        );
+                        return { ...parsedRow, width: savedRow?.width || parsedRow.width };
+                    });
+                    appState.queryWherePreview = parsed.queryWherePreview;
+                    appState.queryWhereExpression = parsed.whereExpression;
                 } catch (error) {
                     console.warn(`Impossible d’afficher la clause WHERE de « ${query.name} » dans la grille :`, error);
                 }
