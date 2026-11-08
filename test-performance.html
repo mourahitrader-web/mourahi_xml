@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test de Performance - BigSi_XML</title>
+    <script src="vendor/tailwind/tailwindcss.js"></script>
+    <link rel="stylesheet" href="vendor/fontawesome/all.min.css">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .test-container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            background: #f0f0f0;
+        }
+        .success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .progress {
+            background: #e9ecef;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .progress-bar {
+            height: 20px;
+            background: #007bff;
+            transition: width 0.3s;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <h1 class="text-2xl font-bold mb-6 text-red-700">Test de Performance BigSi_XML</h1>
+        
+        <div class="mb-6">
+            <h2 class="text-lg font-semibold mb-2">Instructions</h2>
+            <p class="text-sm text-gray-600">
+                Ce test permet de vérifier les performances du nouveau système de parsing XML avec cache et Web Workers.
+            </p>
+        </div>
+
+        <div class="mb-6">
+            <h2 class="text-lg font-semibold mb-2">Test 1 : Cache IndexedDB</h2>
+            <button onclick="testCache()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+                Tester le cache
+            </button>
+            <div id="cacheResult" class="result hidden"></div>
+        </div>
+
+        <div class="mb-6">
+            <h2 class="text-lg font-semibold mb-2">Test 2 : Web Worker</h2>
+            <button onclick="testWorker()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+                Tester le Web Worker
+            </button>
+            <div id="workerResult" class="result hidden"></div>
+        </div>
+
+        <div class="mb-6">
+            <h2 class="text-lg font-semibold mb-2">Test 3 : Parsing XML</h2>
+            <div class="flex gap-2 mb-2">
+                <input type="file" id="xmlFileInput" accept=".xml" class="flex-1">
+                <button onclick="testParsing()" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">
+                    Parser
+                </button>
+            </div>
+            <div class="progress mb-2 hidden" id="parsingProgress">
+                <div class="progress-bar" id="progressBar" style="width: 0%"></div>
+            </div>
+            <div id="parsingResult" class="result hidden"></div>
+        </div>
+
+        <div class="mb-6">
+            <h2 class="text-lg font-semibold mb-2">Test 4 : Re-parsing (depuis cache)</h2>
+            <button onclick="testReparsing()" class="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700">
+                Re-parser (depuis cache)
+            </button>
+            <div id="reparsingResult" class="result hidden"></div>
+        </div>
+
+        <div class="mb-6">
+            <h2 class="text-lg font-semibold mb-2">Statistiques</h2>
+            <button onclick="showStats()" class="bg-info-600 text-white px-4 py-2 rounded hover:bg-info-700">
+                Afficher les statistiques
+            </button>
+            <div id="statsResult" class="result hidden"></div>
+        </div>
+
+        <div class="mb-6">
+            <h2 class="text-lg font-semibold mb-2">Actions</h2>
+            <div class="flex gap-2">
+                <button onclick="clearCache()" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700">
+                    Vider le cache
+                </button>
+                <button onclick="listCachedFiles()" class="bg-yellow-600 text-white px-4 py-2 rounded hover:bg-yellow-700">
+                    Lister les fichiers en cache
+                </button>
+            </div>
+            <div id="actionsResult" class="result hidden"></div>
+        </div>
+    </div>
+
+    <script src="js/xml-cache.js"></script>
+    <script src="js/xml-parser-manager.js"></script>
+    <script>
+        // Initialiser le gestionnaire
+        xmlParserManager.init();
+        
+        let lastFile = null;
+        let lastStartTime = 0;
+
+        function showResult(elementId, message, isSuccess = true) {
+            const element = document.getElementById(elementId);
+            element.textContent = message;
+            element.classList.remove('hidden');
+            element.classList.remove('success', 'error');
+            element.classList.add(isSuccess ? 'success' : 'error');
+        }
+
+        async function testCache() {
+            try {
+                const startTime = Date.now();
+                
+                // Tester l'initialisation du cache
+                await xmlCache.init();
+                
+                // Tester l'ajout d'une entrée
+                const testData = { test: 'value' };
+                await xmlCache.saveToCache('test.xml', 100, Date.now(), '<test>data</test>', testData);
+                
+                // Tester la récupération
+                const cached = await xmlCache.loadFromCache('test.xml', 100, Date.now());
+                
+                // Tester la vérification
+                const isCached = await xmlCache.isInCache('test.xml', 100, Date.now());
+                
+                const elapsed = Date.now() - startTime;
+                showResult('cacheResult', 
+                    `Cache fonctionnel !\n` +
+                    `Initialisation: OK\n` +
+                    `Sauvegarde: OK\n` +
+                    `Récupération: OK\n` +
+                    `Vérification: OK\n` +
+                    `Temps: ${elapsed}ms`,
+                    true
+                );
+            } catch (error) {
+                showResult('cacheResult', `Erreur: ${error.message}`, false);
+            }
+        }
+
+        async function testWorker() {
+            try {
+                if (!xmlParserManager.worker) {
+                    showResult('workerResult', 'Web Worker non disponible', false);
+                    return;
+                }
+                
+                const startTime = Date.now();
+                
+                // Tester le parsing avec le worker
+                const xmlString = `<root><item>Test 1</item><item>Test 2</item></root>`;
+                const result = await xmlParserManager.parseXmlString(xmlString, 'test-worker.xml');
+                
+                const elapsed = Date.now() - startTime;
+                showResult('workerResult', 
+                    `Web Worker fonctionnel !\n` +
+                    `Tables trouvées: ${Object.keys(result.tableMap).length}\n` +
+                    `Temps: ${elapsed}ms`,
+                    true
+                );
+            } catch (error) {
+                showResult('workerResult', `Erreur: ${error.message}`, false);
+            }
+        }
+
+        async function testParsing() {
+            const fileInput = document.getElementById('xmlFileInput');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                showResult('parsingResult', 'Veuillez sélectionner un fichier XML', false);
+                return;
+            }
+            
+            lastFile = file;
+            lastStartTime = Date.now();
+            
+            const progressBar = document.getElementById('progressBar');
+            const parsingProgress = document.getElementById('parsingProgress');
+            parsingProgress.classList.remove('hidden');
+            progressBar.style.width = '0%';
+            
+            try {
+                const result = await xmlParserManager.parseXmlFile(file, {
+                    useCache: false,
+                    forceReparse: true,
+                    onProgress: (progress) => {
+                        progressBar.style.width = `${progress}%`;
+                    }
+                });
+                
+                const elapsed = Date.now() - lastStartTime;
+                const tableCount = Object.keys(result.tableMap).length;
+                const rowCount = Object.values(result.tableMap).reduce((sum, rows) => sum + rows.length, 0);
+                
+                showResult('parsingResult', 
+                    `Parsing réussi !\n` +
+                    `Fichier: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} Mo)\n` +
+                    `Tables: ${tableCount}\n` +
+                    `Lignes: ${rowCount}\n` +
+                    `Temps: ${elapsed}ms\n` +
+                    `Depuis cache: ${result.fromCache ? 'Oui' : 'Non'}`,
+                    true
+                );
+            } catch (error) {
+                showResult('parsingResult', `Erreur: ${error.message}`, false);
+            }
+        }
+
+        async function testReparsing() {
+            if (!lastFile) {
+                showResult('reparsingResult', 'Veuillez d\'abord parser un fichier', false);
+                return;
+            }
+            
+            try {
+                const startTime = Date.now();
+                
+                const result = await xmlParserManager.parseXmlFile(lastFile, {
+                    useCache: true,
+                    onProgress: (progress) => {
+                        document.getElementById('progressBar').style.width = `${progress}%`;
+                    }
+                });
+                
+                const elapsed = Date.now() - startTime;
+                const tableCount = Object.keys(result.tableMap).length;
+                
+                showResult('reparsingResult', 
+                    `Re-parsing réussi !\n` +
+                    `Fichier: ${lastFile.name}\n` +
+                    `Tables: ${tableCount}\n` +
+                    `Temps: ${elapsed}ms\n` +
+                    `Depuis cache: ${result.fromCache ? 'Oui' : 'Non'}`,
+                    true
+                );
+            } catch (error) {
+                showResult('reparsingResult', `Erreur: ${error.message}`, false);
+            }
+        }
+
+        async function showStats() {
+            try {
+                const files = await xmlCache.listCachedFiles();
+                
+                if (files.length === 0) {
+                    showResult('statsResult', 'Aucun fichier en cache', true);
+                    return;
+                }
+                
+                let totalSize = 0;
+                let totalRows = 0;
+                let message = 'Fichiers en cache:\n';
+                
+                for (const file of files) {
+                    totalSize += file.fileSize || 0;
+                    totalRows += file.rowCount || 0;
+                    message += `- ${file.fileName} (${(file.fileSize / 1024 / 1024).toFixed(2)} Mo, ${file.rowCount || 0} lignes)\n`;
+                }
+                
+                message += `\nTotal: ${files.length} fichier(s), ${(totalSize / 1024 / 1024).toFixed(2)} Mo, ${totalRows} lignes`;
+                
+                showResult('statsResult', message, true);
+            } catch (error) {
+                showResult('statsResult', `Erreur: ${error.message}`, false);
+            }
+        }
+
+        async function clearCache() {
+            try {
+                await xmlCache.clearCache();
+                showResult('actionsResult', 'Cache vidé avec succès', true);
+            } catch (error) {
+                showResult('actionsResult', `Erreur: ${error.message}`, false);
+            }
+        }
+
+        async function listCachedFiles() {
+            try {
+                const files = await xmlCache.listCachedFiles();
+                
+                if (files.length === 0) {
+                    showResult('actionsResult', 'Aucun fichier en cache', true);
+                    return;
+                }
+                
+                let message = 'Fichiers en cache:\n';
+                for (const file of files) {
+                    message += `- ${file.fileName} (${(file.fileSize / 1024 / 1024).toFixed(2)} Mo)\n`;
+                }
+                
+                showResult('actionsResult', message, true);
+            } catch (error) {
+                showResult('actionsResult', `Erreur: ${error.message}`, false);
+            }
+        }
+    </script>
+</body>
+</html>

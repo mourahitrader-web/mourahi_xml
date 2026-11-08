@@ -2096,12 +2096,16 @@
                 };
 
                 try {
-                    const xmlString = await readXmlFile(file, fileProgress);
                     showXmlLoading(`Analyse ${fileIndex + 1}/${files.length} : ${file.name}`, null);
-                    const tableMap = await parseXmlInWorker(xmlString);
-                    const result = await loadXMLTableMap(tableMap, file.name, false, true);
-                    addedTableNames.push(...result.addedTableNames);
-                    existingTableNames.push(...result.existingTableNames);
+                    const result = await xmlParserManager.parseXmlFile(file, {
+                        useCache: true,
+                        onProgress: fileProgress
+                    });
+                    const tableMap = result.tableMap;
+                    const cacheInfo = result.fromCache ? ' (depuis le cache)' : '';
+                    const loadResult = await loadXMLTableMap(tableMap, file.name + cacheInfo, false, true);
+                    addedTableNames.push(...loadResult.addedTableNames);
+                    existingTableNames.push(...loadResult.existingTableNames);
                 } catch (error) {
                     errors.push(`${file.name} : ${error.message || error}`);
                 }
@@ -2917,6 +2921,7 @@
 
             try {
                 await clearLocalDatabase();
+                await xmlCache.clearCache();
                 localStorage.removeItem(QUERY_DRAFT_KEY);
                 localStorage.removeItem(PROJECT_STORAGE_KEY);
                 localStorage.removeItem(QUERY_STORAGE_KEY);
